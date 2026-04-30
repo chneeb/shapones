@@ -15,12 +15,14 @@
 // see: https://qiita.com/Yukiya_Ishioka/items/6b5b6cb246f1d1e94461
 
 #include "pico/stdlib.h"
-#include "ws19804_c.h"
+#include <hardware/spi.h>
+#include <pico/stdio.h>
+#include "picocalc_c.h"
 
-#define DEF_SPI_TX_PIN  11
-#define DEF_SPI_RX_PIN  12
-#define DEF_SPI_SCK_PIN 10
-#define DEF_SPI_CSN_PIN 22
+#define DEF_SPI_TX_PIN  19
+#define DEF_SPI_RX_PIN  16
+#define DEF_SPI_SCK_PIN 18
+#define DEF_SPI_CSN_PIN 17
 
 #define FCLK_FAST() { }
 #define FCLK_SLOW() { }
@@ -80,26 +82,57 @@ static volatile UINT Timer1, Timer2;        /* 1kHz decrement timer stopped at z
 static BYTE CardType;   /* Card type flags */
 
 
+void HWReadSPI(unsigned char *buff, int cnt) {
+    spi_read_blocking(Pico_SD_SPI_MOD, 0xff, buff, cnt);
+}
+
+void HWSendSPI(const unsigned char *buff, int cnt) {
+    spi_write_blocking(Pico_SD_SPI_MOD, buff, cnt);
+}
 
 /*-----------------------------------------------------------------------*/
 /* SPI controls (Platform dependent)                                     */
 /*-----------------------------------------------------------------------*/
 
 /* Initialize MMC interface */
-static void init_spi (void)
+static void init_sd_spi (void)
 {
+
+    //initilase GPIO ports
+    gpio_init(DEF_SPI_SCK_PIN );
+    gpio_init(DEF_SPI_TX_PIN);
+    gpio_init(DEF_SPI_RX_PIN);
+    gpio_put(DEF_SPI_SCK_PIN,0);
+    gpio_put(DEF_SPI_TX_PIN,0);
+    gpio_set_pulls(DEF_SPI_RX_PIN,true,false);
+
+    //set GPIO post function
+    gpio_set_function(DEF_SPI_SCK_PIN, GPIO_FUNC_SPI); // SCK
+    gpio_set_function(DEF_SPI_TX_PIN, GPIO_FUNC_SPI);  // TX
+    gpio_set_function(DEF_SPI_RX_PIN, GPIO_FUNC_SPI);  // RX
+
+    gpio_set_dir(DEF_SPI_SCK_PIN,GPIO_OUT);
+    gpio_set_dir(DEF_SPI_TX_PIN,GPIO_OUT);
+    gpio_set_dir(DEF_SPI_RX_PIN,GPIO_IN);
+
+
     /* CS# */
     gpio_init( DEF_SPI_CSN_PIN );
+    gpio_set_function(DEF_SPI_CSN_PIN, GPIO_FUNC_SIO);
     gpio_set_dir( DEF_SPI_CSN_PIN, GPIO_OUT);
 
     CS_HIGH();            /* Set CS# high */
-    
+
+     //initalise SPI module
+    spi_init(Pico_SD_SPI_MOD, 250000);
+    spi_set_format(Pico_SD_SPI_MOD, 8, 0, 0, SPI_MSB_FIRST);
+
     sleep_ms(10);
 }
 
 static BYTE rcvr_spi() {
     BYTE buff;
-    ws19804_read_blocking(0xff, &buff, 1);
+    HWReadSPI( &buff, 1);
     return buff;
 }
 
@@ -109,12 +142,12 @@ static void rcvr_spi_multi (
     UINT btr        /* Number of bytes to receive (even number) */
 )
 {
-    ws19804_read_blocking(0xff, buff, btr);
+    HWReadSPI(buff, btr);
 }
 
 
 static void xmit_spi(BYTE buff) {
-    ws19804_write_blocking(&buff, 1);
+    HWSendSPI(&buff, 1);
 }
 
 /* Send multiple byte */
@@ -123,7 +156,7 @@ static void xmit_spi_multi (
     UINT btx            /* Number of bytes to send (even number) */
 )
 {
-    ws19804_write_blocking(buff, btx);
+    HWSendSPI(buff, btx);
 }
 
 
@@ -298,7 +331,7 @@ DSTATUS disk_initialize (
 
 
     if (drv) return STA_NOINIT;         /* Supports only drive 0 */
-    init_spi();                         /* Initialize SPI */
+    init_sd_spi();                         /* Initialize SPI */
 
     if (Stat & STA_NODISK) return Stat; /* Is card existing in the soket? */
 
