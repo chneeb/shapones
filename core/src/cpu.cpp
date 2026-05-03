@@ -19,6 +19,11 @@ static registers_t reg;
 static bool stopped = true;
 volatile cycle_t ppu_cycle_count;
 
+static uint32_t nmi_count = 0;
+static addr_t nmi_vector = 0;
+static uint32_t rti_count = 0;
+static uint8_t open_bus = 0;
+
 cycle_t dma_cycle_steal = 0;
 static void dma_execute(uint8_t src_page);
 static void bus_write(addr_t addr, uint8_t data);
@@ -26,7 +31,7 @@ static void bus_write(addr_t addr, uint8_t data);
 bool ppu_scroll_changed = false;
 
 static SHAPONES_INLINE uint16_t bus_read_w(addr_t addr) {
-  return (uint16_t)bus_read(addr) | ((uint16_t)bus_read(addr + 1) << 8);
+  return (uint16_t)bus_read(addr) | ((uint16_t)bus_read((addr + 1) & 0xFFFF) << 8);
 }
 
 result_t init() {
@@ -51,6 +56,8 @@ result_t reset() {
   reg.SP = 0xfd;
   reg.PC = bus_read_w(VEC_RESET) | 0x8000;
   ppu_cycle_count = 0;
+  nmi_count = 0;
+  nmi_vector = 0;
   stopped = false;
   SHAPONES_PRINTF("Entry point: 0x%x\n", (int)reg.PC);
   return result_t::SUCCESS;
@@ -59,7 +66,8 @@ result_t reset() {
 void stop() {
   if (stopped) return;
   stopped = true;
-  SHAPONES_PRINTF("CPU stopped.\n");
+  SHAPONES_PRINTF("CPU stopped. NMI count=%lu, NMI vector=0x%04x\n",
+                 (unsigned long)nmi_count, (unsigned)nmi_vector);
   SHAPONES_PRINTF("  PC: 0x%02x\n", (int)reg.PC);
   SHAPONES_PRINTF("  A : 0x%02x\n", (int)reg.A);
   SHAPONES_PRINTF("  X : 0x%02x\n", (int)reg.X);
@@ -80,19 +88,13 @@ bool is_stopped() { return stopped; }
 
 static SHAPONES_INLINE uint8_t fetch() {
   uint8_t retval = bus_read(reg.PC);
-  reg.PC += 1;
-  if (reg.PC == 0) {
-    SHAPONES_PRINTF("*Warning: PC wrapped around to 0x0000\n");
-  }
+  reg.PC = (reg.PC + 1) & 0xFFFF;
   return retval;
 }
 
 static SHAPONES_INLINE uint16_t fetch_w() {
   uint16_t retval = bus_read_w(reg.PC);
-  reg.PC += 2;
-  if (reg.PC == 0 || reg.PC == 1) {
-    SHAPONES_PRINTF("*Warning: PC wrapped around to 0x0000\n");
-  }
+  reg.PC = (reg.PC + 2) & 0xFFFF;
   return retval;
 }
 
@@ -105,13 +107,20 @@ static SHAPONES_INLINE uint8_t set_nz(uint8_t value) {
 static SHAPONES_INLINE void push(uint8_t value) {
   if (reg.SP == 0) {
     SHAPONES_ERRORF("Stack Overflow at push()\n");
+  } else if (reg.SP == 0x20) {
+    static bool sp_warn = false;
+    if (!sp_warn) { sp_warn = true;
+      SHAPONES_PRINTF("WARNING: SP=0x20 (stack 87%% full) PC=0x%04x\n",
+                      (unsigned)reg.PC);
+    }
   }
   bus_write(0x100 | reg.SP--, value);
 }
 
 static SHAPONES_INLINE uint8_t pop() {
-  if (reg.SP >= 255) {
-    SHAPONES_ERRORF("Stack Underflow at pop()\n");
+  if (reg.SP == 0xFF) {
+    SHAPONES_PRINTF("*Warning: pop() with empty stack at PC=0x%04x\n",
+                    (unsigned)reg.PC);
   }
   return bus_read(0x100 | ++reg.SP);
 }
@@ -165,7 +174,7 @@ static SHAPONES_INLINE addr_t fetch_ind_abs() {
 static SHAPONES_INLINE addr_t fetch_rel(cycle_t *cycle) {
   int distance = fetch();
   if (distance >= 0x80) distance -= 256;
-  addr_t retval = reg.PC + distance;
+  addr_t retval = (reg.PC + distance) & 0xFFFF;
   if ((retval & 0xff00u) != (reg.PC & 0xff00u)) *cycle += 1;
   return retval;
 }
@@ -204,10 +213,7 @@ static SHAPONES_INLINE void opRTI() {
 static SHAPONES_INLINE void opRTS() {
   reg.PC = (addr_t)pop();
   reg.PC |= ((addr_t)pop() << 8);
-  reg.PC += 1;
-  if (reg.PC == 0) {
-    SHAPONES_PRINTF("*Warning: PC wrapped around to 0x0000 after RTS\n");
-  }
+  reg.PC = (reg.PC + 1) & 0xFFFF;
 }
 
 static SHAPONES_INLINE void opBIT(addr_t addr) {
@@ -464,7 +470,21 @@ result_t service() {
       push(reg.PC & 0xff);
       push(s.raw);
       reg.status.interrupt = true;
-      reg.PC = bus_read_w(VEC_NMI);
+      addr_t vec = bus_read_w(VEC_NMI);
+      if (nmi_count == 0) nmi_vector = vec;
+      if (nmi_count < 3) {
+        SHAPONES_PRINTF(
+            "NMI #%lu: return_PC=0x%04x SP=0x%02x vec=0x%04x "
+            "prg_blocks=[%u,%u,%u,%u]\n",
+            (unsigned long)nmi_count, (unsigned)reg.PC, (unsigned)reg.SP,
+            (unsigned)vec,
+            (unsigned)memory::prgrom_remap_table[0],
+            (unsigned)memory::prgrom_remap_table[1],
+            (unsigned)memory::prgrom_remap_table[2],
+            (unsigned)memory::prgrom_remap_table[3]);
+      }
+      nmi_count++;
+      reg.PC = vec;
       cycle += 7;  // ?
     } else if (!!interrupt::get_irq() && !reg.status.interrupt) {
       // IRQ
@@ -486,7 +506,10 @@ result_t service() {
             // clang-format off
           case 0x00: opBRK();                                     cycle += 7; break;
           case 0x20: opJSR(fetch_abs());                          cycle += 6; break;
-          case 0x40: opRTI();                              n = 0; cycle += 6; break;
+          case 0x40: opRTI(); if (rti_count++ < 3) SHAPONES_PRINTF(
+              "RTI #%lu -> PC=0x%04x SP=0x%02x\n",
+              (unsigned long)(rti_count-1),(unsigned)reg.PC,(unsigned)reg.SP);
+                                                           n = 0; cycle += 6; break;
           case 0x60: opRTS();                                     cycle += 6; break;
           case 0x4C: opJMP(fetch_abs());                          cycle += 3; break;
           case 0x6C: opJMP(fetch_ind_abs());                      cycle += 5; break;
@@ -783,18 +806,24 @@ uint8_t bus_read(addr_t addr) {
   } else if (memory::PRGRAM_BASE <= addr &&
              addr < memory::PRGRAM_BASE + PRGRAM_RANGE) {
     retval = memory::prgram_read(addr - memory::PRGRAM_BASE);
-  } else if (PPUREG_BASE <= addr && addr < PPUREG_BASE + ppu::REG_SIZE) {
-    retval = ppu::reg_read(addr);
+  } else if (WRAM_MIRROR_BASE <= addr && addr < 0x2000) {
+    retval = memory::wram[addr & 0x7FF];
+  } else if (PPUREG_BASE <= addr && addr < 0x4000) {
+    uint8_t reg_idx = addr & 7;
+    if (reg_idx == 2 || reg_idx == 4 || reg_idx == 7) {
+      retval = ppu::reg_read(0x2000 + reg_idx);
+    } else {
+      retval = open_bus;  // write-only PPU register: return last bus value
+    }
   } else if (apu::REG_PULSE1_REG0 <= addr && addr <= apu::REG_DMC_REG3 ||
              addr == apu::REG_STATUS) {
     retval = apu::reg_read(addr);
   } else if (INPUT_REG_0 <= addr && addr <= INPUT_REG_1) {
     retval = input::read_latched(addr - INPUT_REG_0);
-  } else if (WRAM_MIRROR_BASE <= addr && addr < WRAM_MIRROR_BASE + WRAM_SIZE) {
-    retval = memory::wram[addr - WRAM_MIRROR_BASE];
   } else {
     retval = 0;
   }
+  open_bus = retval;
   return retval;
 }
 
@@ -804,9 +833,12 @@ static void bus_write(addr_t addr, uint8_t data) {
   } else if (memory::PRGRAM_BASE <= addr &&
              addr < memory::PRGRAM_BASE + PRGRAM_RANGE) {
     memory::prgram_write(addr - memory::PRGRAM_BASE, data);
-  } else if (PPUREG_BASE <= addr && addr < PPUREG_BASE + ppu::REG_SIZE) {
-    ppu::reg_write(addr, data);
-    ppu_scroll_changed |= (addr == ppu::REG_PPUSCROLL);
+  } else if (WRAM_MIRROR_BASE <= addr && addr < 0x2000) {
+    memory::wram[addr & 0x7FF] = data;
+  } else if (PPUREG_BASE <= addr && addr < 0x4000) {
+    addr_t ppu_addr = 0x2000 + (addr & 7);
+    ppu::reg_write(ppu_addr, data);
+    ppu_scroll_changed |= (ppu_addr == ppu::REG_PPUSCROLL);
   } else if (addr == OAM_DMA_REG) {
     dma_execute(data);
   } else if (apu::REG_PULSE1_REG0 <= addr && addr <= apu::REG_DMC_REG3 ||
@@ -814,8 +846,6 @@ static void bus_write(addr_t addr, uint8_t data) {
     apu::reg_write(addr, data);
   } else if (addr == INPUT_REG_0) {
     input::write_control(data);
-  } else if (WRAM_MIRROR_BASE <= addr && addr < WRAM_MIRROR_BASE + WRAM_SIZE) {
-    memory::wram[addr - WRAM_MIRROR_BASE] = data;
   } else {
     mapper::instance->write(addr, data);
   }

@@ -57,4 +57,8 @@ target_link_libraries(
     pico_multicore
 )
 
+pico_enable_stdio_usb(picocalc_nes 1)
+
+target_compile_definitions(picocalc_nes PRIVATE SHAPONES_ENABLE_LOG=1)
+
 pico_add_extra_outputs(picocalc_nes)

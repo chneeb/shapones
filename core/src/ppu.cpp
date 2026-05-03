@@ -109,6 +109,7 @@ uint8_t reg_read(addr_t addr) {
   switch (addr) {
     case REG_PPUSTATUS: {
       retval = reg.status.raw;
+      reg.status.raw &= 0x7F;  // clear vblank bit immediately (NES hw behaviour)
       scroll_ppuaddr_high_stored = false;
       ppu_status_read = true;
     } break;

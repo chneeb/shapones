@@ -136,6 +136,9 @@ result_t map_ines(const uint8_t *ines) {
   if (new_prgram_size == 0) {
     new_prgram_size = 8192;  // 8KB PRG RAM if not specified
   }
+  if (new_prgram_size > 32768) {
+    new_prgram_size = 8192;  // clamp: >32KB is a bad/VS-System header
+  }
   SHAPONES_PRINTF("PRG RAM size = %d kB\n", new_prgram_size / 1024);
   if (new_prgram_size != prgram_size) {
     if (prgram) {

@@ -57,6 +57,15 @@ Skipping `shapones::init()` leaves semaphores uninitialised and causes hangs.
 
 **Mappers**: only 0–4 (NROM, MMC1, UxROM, CNROM, MMC3) are implemented.
 
+**CPU address bus accuracy** (`core/src/cpu.cpp`): several NES accuracy requirements that are non-obvious on ARM:
+
+- `addr_t = uint_fast16_t` is **uint32_t on ARM Cortex-M** — PC never wraps at $FFFF without explicit masking. All PC increments use `& 0xFFFF`: `fetch()`, `fetch_w()`, `opRTS()`; `bus_read_w()` masks `addr+1` too. `fetch_rel()` masks its result.
+- **WRAM mirrors**: $0000–$07FF is primary WRAM; $0800–$1FFF are mirrors. The bus decoder covers the full mirror range with `addr < 0x2000` and `wram[addr & 0x7FF]`.
+- **PPU register mirrors**: $2000–$2007 are the real registers; $2008–$3FFF mirror them every 8 bytes. The bus decoder covers the full range with `addr < 0x4000` and `0x2000 + (addr & 7)`.
+- **Open-bus for write-only PPU registers**: reading $2000, $2001, $2003, $2005, $2006 (write-only) returns the last byte that was on the CPU data bus (`static uint8_t open_bus`, updated at the end of every `bus_read`). Returning 0 instead breaks games (e.g. Bubble Bobble) that RTI into PPU address space and execute the byte there as an opcode.
+- **$2002 vblank flag** must clear immediately when read, not deferred. Done inline in `ppu::reg_read()` with `reg.status.raw &= 0x7F`.
+- **Stack pointer wraps**: `pop()` with SP=0xFF wraps to 0x00 (reads $0100) — this is valid 6502 behaviour. Only log a warning, do not stop.
+
 ### Picocalc sample (`samples/v3/`)
 
 Runs on two cores:

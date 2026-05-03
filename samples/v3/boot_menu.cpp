@@ -3,6 +3,7 @@
 #include <string.h>
 #include <malloc.h>
 #include <unistd.h>
+#include <stdio.h>
 
 extern char __HeapLimit;
 
@@ -162,6 +163,7 @@ static bool load_nes(const char *fname, int size) {
 
     char *brk = (char*)sbrk(0);
     size_t heap_available = (&__HeapLimit - brk) + mallinfo().fordblks;
+    printf("load_nes: %s size=%d heap=%u\n", fname, size, (unsigned)heap_available);
     uint8_t *ines = nullptr;
     if ((size_t)size <= heap_available) {
         ines = (uint8_t*)malloc(size);
@@ -186,7 +188,8 @@ static bool load_nes(const char *fname, int size) {
 
     f_close(&fil);
 
-    shapones::memory::map_ines(ines);
+    auto res = shapones::memory::map_ines(ines);
+    printf("map_ines result: %d\n", (int)res);
     picocalc::set_spi_speed(SYS_CLK_FREQ / 4);
 
     return true;

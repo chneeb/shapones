@@ -92,7 +92,6 @@ class Map001 : public Mapper {
         prgrom_remap(0xC000, prgrom_phys_size - 0x4000, 0x4000);
         break;
     }
-
     if ((ctrl_reg & 0x10) == 0) {
       chrrom_remap(0x0000, (chr_bank0 & 0x1E) << 12, 0x2000);
     } else {
