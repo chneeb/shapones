@@ -15,6 +15,11 @@ add_executable(picocalc_nes)
 
 pico_generate_pio_header(picocalc_nes ${CMAKE_CURRENT_LIST_DIR}/picocalc.pio)
 
+# rp2040-psram: CS=GP20, SCK=GP21, MOSI=GP2, MISO=GP3 on PIO1 (large-ROM path)
+set(PICO_SDK true)
+add_subdirectory(rp2040-psram)
+pico_generate_pio_header(picocalc_nes ${CMAKE_CURRENT_LIST_DIR}/rp2040-psram/psram_spi.pio)
+
 set(SHAPONES_PATH ../../core)
 set(FATFS_PATH ../fatfs/source)
 
@@ -28,6 +33,7 @@ target_sources(
     picocalc_nes.cpp
     boot_menu.cpp
     host_intf.cpp
+    psram_loader.cpp
     ${SHAPONES_SOURCES}
     ${FATFS_PATH}/ff.c
     ${FATFS_PATH}/ffsystem.c
@@ -55,10 +61,20 @@ target_link_libraries(
     hardware_spi
     hardware_i2c
     pico_multicore
+    rp2040-psram
 )
 
 pico_enable_stdio_usb(picocalc_nes 1)
 
-target_compile_definitions(picocalc_nes PRIVATE SHAPONES_ENABLE_LOG=1)
+target_compile_definitions(picocalc_nes PRIVATE
+    SHAPONES_ENABLE_LOG=1
+    PSRAM_PIN_CS=20
+    PSRAM_PIN_SCK=21
+    PSRAM_PIN_MOSI=2
+    PSRAM_PIN_MISO=3
+    PSRAM_ASYNC     # required: the library's async inline helpers are unguarded
+                    # and won't compile as C++ without pio_spi_write_async declared
+    DISABLE_NUNCHUCK  # GP4/GP5 share traces with PSRAM on Picocalc PCB
+)
 
 pico_add_extra_outputs(picocalc_nes)

@@ -27,6 +27,7 @@ addr_t prgram_addr_mask = 0;
 
 uint32_t chrrom_phys_size = CHRROM_RANGE;
 uint32_t chrrom_phys_addr_mask = 0;
+void (*prgrom_bank_switch_hook)(uint32_t, uint32_t) = nullptr;
 addr_t prgrom_cpu_addr_mask = PRGROM_RANGE - 1;
 uint32_t chrram_size = 0;
 

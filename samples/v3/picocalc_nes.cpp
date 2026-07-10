@@ -16,6 +16,7 @@
 
 #include "common.hpp"
 #include "boot_menu.hpp"
+#include "psram_loader.hpp"
 
 // monitor pin for debugging
 static constexpr int PIN_MONITOR = 1;
@@ -119,6 +120,7 @@ int main() {
     nunchuck_init();
 
     picocalc::init(SYS_CLK_FREQ);
+    psram_loader_init();
 
     // initialize shapones emulator core
     auto nes_cfg = shapones::get_default_config();
@@ -140,6 +142,15 @@ static void boot_nes() {
     // reset
     shapones::reset();
 
+    // shapones::reset() triggers the mapper's reset handler, which rewrites
+    // prgrom/chrrom_remap_table with raw physical bank indices. Fix the tables
+    // back to our slot-encoded values before the first cpu::service() runs
+    // (the CPU reads its reset vector on the first service call).
+    if (psram_active) {
+        psram_sync_prg();
+        psram_sync_chr();
+    }
+
     // start APU loop
     apu_fill_buffer(speaker.get_buffer(0));
     apu_fill_buffer(speaker.get_buffer(1));
@@ -160,6 +171,7 @@ static void cpu_loop() {
     for(;;) {
         // run CPU
         shapones::cpu::service();
+        if (psram_active) psram_sync_prg();
 
         // update input status: keyboard (via ISR) OR nunchuck (polled per frame)
         shapones::input::status_t input_status;
@@ -208,6 +220,7 @@ static void cpu_loop() {
 
             if (y == shapones::SCREEN_HEIGHT - 1) {
                 nunchuck_poll();
+                if (psram_active) psram_sync_chr();
                 // fps measurement
                 auto t_now = get_absolute_time();
                 if (frame_count < 60-1) {

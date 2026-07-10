@@ -170,6 +170,7 @@ static constexpr int NUNCHUCK_SCL = 5;
 int nunchuck_pins[8] = {};
 
 void nunchuck_init() {
+#ifndef DISABLE_NUNCHUCK
     i2c_init(i2c0, 400 * 1000);
     gpio_set_function(NUNCHUCK_SDA, GPIO_FUNC_I2C);
     gpio_set_function(NUNCHUCK_SCL, GPIO_FUNC_I2C);
@@ -186,9 +187,11 @@ void nunchuck_init() {
     cmd[0] = 0xFE; cmd[1] = 0x03;
     i2c_write_blocking(i2c0, NUNCHUCK_ADDR, cmd, 2, false);
     sleep_ms(1);
+#endif
 }
 
 void nunchuck_poll() {
+#ifndef DISABLE_NUNCHUCK
     uint8_t reg = 0x00;
     if (i2c_write_blocking(i2c0, NUNCHUCK_ADDR, &reg, 1, false) < 0)
         return;
@@ -207,6 +210,7 @@ void nunchuck_poll() {
     nunchuck_pins[5] = !(b6 & 0x40);  // Down
     nunchuck_pins[6] = !(b7 & 0x02);  // Left
     nunchuck_pins[7] = !(b6 & 0x80);  // Right
+#endif
 }
 
 void device_init() {

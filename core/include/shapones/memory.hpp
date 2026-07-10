@@ -97,6 +97,12 @@ extern addr_t prgram_addr_mask;
 extern uint32_t chrrom_phys_size;
 extern uint32_t chrrom_phys_addr_mask;
 
+// Optional hook called synchronously inside prgrom_remap() after updating the
+// table entry. The host can use this to maintain a PSRAM cache without any
+// window where the remap table holds an invalid physical bank index.
+// Set to nullptr when not needed.
+extern void (*prgrom_bank_switch_hook)(uint32_t cpu_block, uint32_t phys_block);
+
 result_t init();
 void deinit();
 
@@ -118,6 +124,8 @@ static SHAPONES_INLINE void prgrom_remap(addr_t cpu_base, uint32_t phys_base,
   uint32_t num_blocks = size >> PRGROM_BLOCK_ADDR_BITS;
   for (int i = 0; i < num_blocks; i++) {
     prgrom_remap_table[cpu_block + i] = phys_block + i;
+    if (prgrom_bank_switch_hook)
+      prgrom_bank_switch_hook(cpu_block + i, phys_block + i);
   }
 }
 

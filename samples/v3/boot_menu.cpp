@@ -10,6 +10,7 @@ extern char __HeapLimit;
 #include "picocalc.hpp"
 #include "mono8x16.hpp"
 #include "common.hpp"
+#include "psram_loader.hpp"
 
 #include "ff.h"
 #include "diskio.h"
@@ -188,13 +189,32 @@ static bool load_nes(const char *fname, int size) {
         ines = (uint8_t*)malloc(size);
     }
     if (!ines) {
-        f_close(&fil);
-        char msg[32];
-        sprintf(msg, "ROM too large (%dKB)", size / 1024);
-        draw_string(0, 20, msg);
+        // Too large for SRAM — stream the ROM into PSRAM instead of failing.
+        printf("load_nes: %dKB exceeds SRAM, using PSRAM path\n", size / 1024);
+
+        // Gate on a PSRAM read/write self-test (USB stdio is up by now).
+        bool st = psram_self_test();
+        printf("psram_self_test: %s\n", st ? "PASS" : "FAIL");
+        draw_string(0, 40, st ? "PSRAM: PASS" : "PSRAM: FAIL");
         update_lcd();
-        sleep_ms(3000);
-        return false;
+        if (!st) {
+            f_close(&fil);
+            sleep_ms(3000);
+            return false;
+        }
+
+        bool ok = psram_load_nes(&fil, (uint32_t)size);
+        f_close(&fil);
+        if (!ok) {
+            char msg[32];
+            sprintf(msg, "ROM too large (%dKB)", size / 1024);
+            draw_string(0, 20, msg);
+            update_lcd();
+            sleep_ms(3000);
+            return false;
+        }
+        picocalc::set_spi_speed(SYS_CLK_FREQ / 4);
+        return true;
     }
 
     UINT sz;
