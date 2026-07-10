@@ -83,6 +83,8 @@ Communication between cores is a lock-free FIFO (`line_fifo_wptr`/`line_fifo_rpt
 
 **SD card**: FatFS (`samples/fatfs/`) over SPI. Picocalc-specific pin mapping is in `samples/fatfs/source/mmc_pico_spi.c` (TX=GP19, RX=GP16, SCK=GP18, CS=GP17).
 
+**ROM location** (`boot_menu.cpp`): `enum_files()` scans the `nes/` subfolder for `*.nes` (see `ROM_DIR`), falling back to the SD root if `nes/` doesn't exist (`FR_NO_PATH`). The winning directory is recorded in the `rom_dir` static so `load_nes()` can build the full path. The menu shows bare filenames; it's `nes/` **or** root, not a merged listing.
+
 **Host interface** (`host_intf.cpp`): implements `shapones::semaphore_*` using `pico/sem.h`, `shapones::spinlock_*` using hardware spin locks, and `get_time_us` via `get_absolute_time()`. The `fsys::*` functions are stubs (save-state not supported in this port).
 
 ### ROM size and PSRAM (Pico2)

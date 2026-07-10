@@ -16,6 +16,13 @@ extern char __HeapLimit;
 
 constexpr int MAX_FILES = 64;
 
+// Preferred ROM subfolder; falls back to the SD root if it doesn't exist.
+constexpr const char *ROM_DIR = "nes";
+
+// Directory the ROMs were actually found in ("nes" or "" for root); set by
+// enum_files() and consumed by load_nes() to build the full path.
+static const char *rom_dir = "";
+
 // enumerate NES files
 static int enum_files(FATFS *fs, char **fname_list, int *fsize_list);
 
@@ -85,7 +92,13 @@ static int enum_files(FATFS *fs, char **fname_list, int *fsize_list) {
 
     DIR dobj;
     FILINFO finfo;
-    fres = f_findfirst(&dobj, &finfo, "", "*.nes");
+    // Prefer the "nes" subfolder; fall back to the SD root if it's missing.
+    rom_dir = ROM_DIR;
+    fres = f_findfirst(&dobj, &finfo, rom_dir, "*.nes");
+    if (fres == FR_NO_PATH) {
+        rom_dir = "";
+        fres = f_findfirst(&dobj, &finfo, rom_dir, "*.nes");
+    }
     int num_files = 0;
     while (fres == FR_OK && finfo.fname[0] && strlen(finfo.fname) > 4 ) {
         fname_list[num_files] = (char*)malloc(strlen(finfo.fname) + 1);
@@ -154,7 +167,13 @@ static bool load_nes(const char *fname, int size) {
     draw_string(0, 0, "Loading...");
     update_lcd();
 
-    fr = f_open(&fil, fname, FA_READ);
+    char path[FF_LFN_BUF + 8];
+    if (rom_dir[0]) {
+        snprintf(path, sizeof(path), "%s/%s", rom_dir, fname);
+    } else {
+        snprintf(path, sizeof(path), "%s", fname);
+    }
+    fr = f_open(&fil, path, FA_READ);
     if (fr) {
         draw_string(0, 20, "File open failed.");
         update_lcd();
@@ -163,7 +182,7 @@ static bool load_nes(const char *fname, int size) {
 
     char *brk = (char*)sbrk(0);
     size_t heap_available = (&__HeapLimit - brk) + mallinfo().fordblks;
-    printf("load_nes: %s size=%d heap=%u\n", fname, size, (unsigned)heap_available);
+    printf("load_nes: %s size=%d heap=%u\n", path, size, (unsigned)heap_available);
     uint8_t *ines = nullptr;
     if ((size_t)size <= heap_available) {
         ines = (uint8_t*)malloc(size);
