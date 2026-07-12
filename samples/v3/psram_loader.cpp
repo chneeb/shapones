@@ -9,6 +9,7 @@
 
 #include "psram_spi.h"
 #include "shapones/memory.hpp"
+#include "common.hpp"  // SYS_CLK_FREQ, MHZ
 
 // PSRAM pin assignments (GP20=CS, GP21=SCK, GP2=MOSI, GP3=MISO via PIO1)
 
@@ -144,14 +145,16 @@ bool psram_loader_init() {
         free(chr_full_cache);
         chr_full_cache = nullptr;
     }
-    // The system clock is 250 MHz (common.hpp SYS_CLK_FREQ). PSRAM reliability
-    // here is a sampling-PHASE problem, not a raw speed one: a timing sweep
-    // (psram_diag_sweep) showed pass/fail oscillating with clkdiv, failing at
-    // both fast and slow ends. clkdiv 2.0 and 3.0 both pass cleanly with the
-    // non-fudge PIO program, so we run at the centre of that window (2.5 →
-    // ~50 MHz SCK) with fudge=false for maximum margin. Do not "optimise" this
-    // divisor without re-running the sweep.
-    g_spi = psram_spi_init_clkdiv(pio1, -1, 2.5f, false);
+    // PSRAM reliability at these clocks is a sampling-PHASE problem, not a raw
+    // speed one: a timing sweep showed pass/fail oscillating with clkdiv,
+    // failing at both fast and slow ends. The known-good operating point is a
+    // ~100 MHz state-machine clock (SCK ~50 MHz) with the non-fudge PIO program,
+    // so clkdiv is SYS_CLK_FREQ / 100 MHz: 2.5 @ 250 MHz, 3.0 @ 300 MHz. If you
+    // change SYS_CLK_FREQ, keep SM ≈ 100 MHz and re-verify with a full bulk
+    // read/verify sweep — a 16-byte round-trip is too weak to catch marginal
+    // timing.
+    static_assert(SYS_CLK_FREQ % (100 * MHZ) == 0, "pick a clkdiv for this clock");
+    g_spi = psram_spi_init_clkdiv(pio1, -1, (float)SYS_CLK_FREQ / (100 * MHZ), false);
     for (int i = 0; i < PRG_SLOTS; i++) { prg_cache_bank[i] = -1; prg_slot_stamp[i] = 0; }
     for (int i = 0; i < shapones::memory::PRGROM_REMAP_TABLE_SIZE; i++) prg_window_slot[i] = -1;
     prg_lru_clock = 0;

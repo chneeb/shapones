@@ -10,7 +10,9 @@
 #include "mono8x16.hpp"
 
 // system clock frequency
-static constexpr uint32_t SYS_CLK_FREQ = 250 * MHZ;
+// NOTE: if you change this, the PSRAM SPI clkdiv in psram_loader_init() must be
+// re-chosen so the PSRAM state-machine clock stays ~100 MHz (see there).
+static constexpr uint32_t SYS_CLK_FREQ = 300 * MHZ;
 
 // frame buffer for DMA (RGB565)
 // 5/4 scale of NES 256x240: fills 320x300 of the 320x320 LCD (10px border top/bottom)
