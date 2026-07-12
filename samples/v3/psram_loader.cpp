@@ -18,15 +18,18 @@
 // always < PRG_SLOT_OFFSET (max PRG bank for mappers 0–4 = 63, i.e. 512 KB).
 static constexpr int PRG_SLOT_OFFSET = 64;
 
-// PRG SRAM cache: 8 × 8 KB = 64 KB. There are only 4 CPU PRG windows, so the
-// extra 4 slots act as a victim cache: when a window switches back to a bank
+// PRG SRAM cache: 12 × 8 KB = 96 KB. There are only 4 CPU PRG windows, so the
+// extra 8 slots act as a victim cache: when a window switches back to a bank
 // that's still resident, it's a free hit with no PSRAM read. This is the main
 // lever on MMC3 frame rate — every miss is a slow ~8 KB PSRAM read on Core 0,
-// and the PPU is throttled to CPU progress, so misses directly cost fps.
-static constexpr int PRG_SLOTS = 8;
+// and the PPU is throttled to CPU progress, so misses directly cost fps. SMB3
+// gameplay churns > 8 banks (dropped to ~35 fps at 8 slots); 12 covers more of
+// the working set. SRAM budget caps this ~12–14 (frame buffer 187 KB + 128 KB
+// CHR cache + this); re-check `arm-none-eabi-size` BSS before growing further.
+static constexpr int PRG_SLOTS = 12;
 
 // Address mask large enough to cover all slot-encoded PRG indices.
-// Slot (64+7) * 8192 + 8191 = 589823 < 0x100000.
+// Slot (64+11) * 8192 + 8191 = 622591 < 0x100000.
 static constexpr uint32_t PRG_ADDR_MASK = 0xFFFFF;
 
 static uint8_t prg_sram[PRG_SLOTS * shapones::memory::PRGROM_BLOCK_SIZE];
