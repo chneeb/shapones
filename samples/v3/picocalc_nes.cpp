@@ -18,13 +18,12 @@
 #include "boot_menu.hpp"
 #include "psram_loader.hpp"
 
-// PROTOTYPE: interlaced LCD update. The full-frame DMA (320x300x2 = 192 KB at
-// ~62.5 MHz SPI ~= 24.6 ms) is the ~40 fps ceiling. With interlacing each frame
-// transfers only every other row (even/odd alternating), halving the LCD DMA so
-// the frame rate can rise toward the 60 fps pacing cap. All 300 rows are still
-// converted every frame; only the transfer is split into two fields. Set to 0
-// to restore the original full-frame path for A/B comparison.
-#define INTERLACE_LCD 1
+// Interlaced LCD update, runtime-toggleable via `interlace_enabled` (defined in
+// common.cpp, toggled by the 'i' key in kbd_interrupt). A full-frame DMA
+// (320x300x2 = 192 KB) doesn't fit the 16.6 ms / 60 fps budget and caps the rate
+// at ~40 fps; interlacing transfers only every other row per frame (even/odd
+// alternating), halving the LCD DMA so the rate can reach the 60 fps pacing cap.
+// All 300 rows are still converted every frame; only the transfer is split.
 
 // monitor pin for debugging
 static constexpr int PIN_MONITOR = 1;
@@ -177,6 +176,9 @@ static void cpu_loop() {
     int frame_count = 0;
     char fps_str[16];
     int lcd_field = 0;  // interlaced update: which parity of rows to send this frame
+    // Latch the (ISR-toggleable) interlace mode once per frame so a mid-frame
+    // toggle can't split a frame between the two transfer paths.
+    bool cur_interlace = interlace_enabled;
     for(;;) {
         // run CPU
         shapones::cpu::service();
@@ -227,13 +229,12 @@ static void cpu_loop() {
 
             line_fifo_rptr = (fifo_rptr + 1) % LINE_FIFO_DEPTH;
 
-#if INTERLACE_LCD
-            // Transfer just-converted rows that belong to the current field. Each
-            // row is a 1-line async DMA (~82 us) that overlaps with the following
-            // scanline's cpu::service()/conversion, so the halved data directly
-            // lifts the frame rate. Rows of the other parity keep last frame's
-            // pixels on the (persistent) panel — that's the interlace.
-            {
+            if (cur_interlace) {
+                // Transfer just-converted rows that belong to the current field.
+                // Each row is a 1-line async DMA (~82 us) that overlaps with the
+                // following scanline's cpu::service()/conversion, so the halved
+                // data directly lifts the frame rate. Rows of the other parity
+                // keep last frame's pixels on the (persistent) panel.
                 const int xo = (picocalc::WIDTH  - FRAME_BUFF_WIDTH)  / 2;
                 const int yo = (picocalc::HEIGHT - FRAME_BUFF_HEIGHT) / 2;
                 if ((out_y & 1) == lcd_field) {
@@ -247,7 +248,6 @@ static void cpu_loop() {
                                                frame_buff + (out_y + 1) * FRAME_BUFF_STRIDE);
                 }
             }
-#endif
 
             if (y == shapones::SCREEN_HEIGHT - 1) {
                 nunchuck_poll();
@@ -265,18 +265,16 @@ static void cpu_loop() {
                     frame_count = 0;
                 }
 
-#if INTERLACE_LCD
-                picocalc::finish_write_data();  // finish this field's last row
-                lcd_field ^= 1;                 // alternate field next frame
-#else
-                // DMA transfer (full frame)
-                picocalc::finish_write_data();
-                //draw_string(0, 0, fps_str);
-                picocalc::start_write_data((picocalc::WIDTH - FRAME_BUFF_WIDTH) / 2, (picocalc::HEIGHT - FRAME_BUFF_HEIGHT) / 2, FRAME_BUFF_WIDTH, FRAME_BUFF_HEIGHT, frame_buff);
-#endif
-                static int tmp = 0;
-                //gpio_put(PIN_MONITOR, tmp);
-                tmp ^= 1;
+                if (cur_interlace) {
+                    picocalc::finish_write_data();  // finish this field's last row
+                    lcd_field ^= 1;                 // alternate field next frame
+                } else {
+                    // full-frame transfer
+                    picocalc::finish_write_data();
+                    picocalc::start_write_data((picocalc::WIDTH - FRAME_BUFF_WIDTH) / 2, (picocalc::HEIGHT - FRAME_BUFF_HEIGHT) / 2, FRAME_BUFF_WIDTH, FRAME_BUFF_HEIGHT, frame_buff);
+                }
+                // re-latch the interlace mode for the next frame
+                cur_interlace = interlace_enabled;
             }
         }
     }

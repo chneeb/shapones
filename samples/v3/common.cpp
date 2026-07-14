@@ -15,6 +15,9 @@ int input_pins[] = {
         PIN_PAD_UP, PIN_PAD_DOWN, PIN_PAD_LEFT, PIN_PAD_RIGHT
 };
 
+// interlaced LCD update on by default; toggled by 'i' in kbd_interrupt()
+volatile bool interlace_enabled = true;
+
 int wait_key() {
     // wait any button pushed
     int i = -1;
@@ -140,6 +143,9 @@ void kbd_interrupt() {
                 break;
             case ']'://A
                 set_kdb_key(0, key_stat);
+                break;
+            case 'i'://toggle interlaced LCD update (on key press only)
+                if (key_stat == 1) interlace_enabled = !interlace_enabled;
                 break;
             default:
                 break;

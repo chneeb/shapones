@@ -57,4 +57,8 @@ extern int nunchuck_pins[8];
 void nunchuck_init();
 void nunchuck_poll();
 
+// Interlaced LCD update on/off; toggled by the 'i' key in kbd_interrupt (ISR),
+// read/latched once per frame in cpu_loop. See picocalc_nes.cpp.
+extern volatile bool interlace_enabled;
+
 #endif
