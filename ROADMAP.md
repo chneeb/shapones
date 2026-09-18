@@ -9,10 +9,15 @@ comparable hardware supplied most of that evidence:
 - `~/Source/pico-286` — 286 emulator, **same Clockworkpi Picocalc PCB**, and
   crucially the *same* `rp2040-psram` library (its `psram_spi.pio` is
   byte-identical to our submodule copy apart from the licence header).
+- `~/Source/freesci-archive` — SCI interpreter on the same PicoCalc. Adopted
+  the pico-286 PSRAM findings and got 396 MHz running (commits `3f570ca5`,
+  `210f2abc`), which surfaced the *bring-up* work those findings do not
+  mention. An older fork of the same PSRAM driver, so its driver-level
+  measurements need care before being applied here.
 
 ---
 
-## 1. PSRAM SPI clock: we are leaving ~1.9x on the table
+## 1. PSRAM SPI clock: we are leaving ~1.25-1.9x on the table
 
 **Today:** `samples/v3/psram_loader.cpp:160` runs `psram_spi_init_clkdiv(pio1,
 -1, SYS_CLK_FREQ / (100*MHZ), false)` — clkdiv 3.0 at 300 MHz, so a **100 MHz
@@ -29,6 +34,20 @@ commits `c9c0458`, `7bd1691`, `d5aa195`):
 | 99 MHz | works, 5012 KB/s | works, 4997 KB/s |
 
 99 MHz + fudge soak-tested clean: 0 errors sustained, ~5.0 MB/s.
+
+**Temper the headline figure.** pico-286's own numbers scale nearly linearly
+(2.02x the SPI rate for 1.87x the throughput). freesci-archive, going
+66.5 -> 99 MHz on an older fork of the driver, got only **1.25x for 1.49x** and
+concluded it is transaction-overhead-bound. We are on the polpo library that
+pico-286 measured, and our own note already records ~264 SPI transactions per
+8 KB read (the protocol caps a transfer at 31 bytes), so expect nearer 1.9x than
+1.25x — but the honest range is the spread, not the top of it.
+
+Worth borrowing freesci's framing too, inverted: there, PSRAM bandwidth was not
+the prize and the CPU clock was. Here it is the other way round, because PSRAM
+misses sit on Core 0's critical path. What travels unchanged is the discipline
+note that came with it — **MHz adds no bytes.** No overclock moves our ROM-size
+or CHR-size ceilings (see the heap bounds in `CLAUDE.md`).
 
 Since the PCB and the PIO programs are identical, this table is inherited
 directly rather than re-derived. Porting their sweep/soak harness was
@@ -69,7 +88,7 @@ under the 83 MHz fudge threshold, and bracketed by the verified 66 and 79 MHz
 plain passes. One-line change plus the `static_assert` at
 `psram_loader.cpp:159`.
 
-### Step 2 — the full 1.9x
+### Step 2 — the rest of it
 
 100 MHz SPI requires `fudge=true`. At 300 MHz that is clkdiv **1.5** =>
 200 MHz SM, which works but is a *fractional* divider: PIO alternates cycle
@@ -79,13 +98,68 @@ soak-testing on our own firmware rather than inheriting.
 
 ### Step 3 — sys-clock overclock (keep separate)
 
-396/400 MHz buys an exact ÷2 *and* ~32% more emulator CPU. Costs: pico-286 runs
-**VREG 1.60 V**; we are at 1.30 V (`picocalc_nes.cpp:114`). It also drags the
-LCD along, since `boot_menu.cpp:216,232` set `set_spi_speed(SYS_CLK_FREQ / 4)`
-— LCD SPI would go 75 -> 99 MHz, an untested panel overclock riding on an
-unrelated change. The LCD is PIO-based (`picocalc.cpp:261`, `div = sys/2/speed`),
-so **pin the LCD to 75 MHz explicitly before any sys-clock bump** so the two
-variables cannot move together.
+396/400 MHz buys an exact ÷2 *and* ~32% more emulator CPU. freesci-archive got
+396 MHz device-confirmed (`210f2abc`: decode 1.6-1.9x faster), so the headroom
+exists. But the bulk of that commit is **bring-up that has nothing to do with
+the PSRAM divisor**, and two of its four pieces apply to us.
+
+**Prerequisite A — pin `clk_peri`.** The SDK's `set_sys_clock_pll()` ties
+`clk_peri` to `clk_sys` **undivided** ("reference clock for UART and SPI
+serial"). We pin it nowhere — there is no `clock_configure` in `samples/v3/` or
+`samples/fatfs/`. The LCD and PSRAM are PIO and immune (own clkdivs), but the
+**SD card is hardware `spi0`** (`mmc_pico_spi.c:127`), so a sys-clock bump
+clocks that block with it. freesci's symptom was serial dying right after the
+clock print and a HardFault on load, i.e. corrupt SD reads feeding the resource
+loader. Not a bug today — `clk_peri` is already 300 MHz and the SD works — but
+a hard prerequisite above that.
+
+**Prerequisite B — understand the flash/QMI question first.** QMI divides
+`clk_sys` for flash, so an undivided high clock corrupts XIP: dead before
+serial, with TFT noise. That, not PSRAM, is what freesci's earlier "RULED OUT,
+do not retry" verdict actually was — they had been turning the PSRAM knob while
+flash timing was never in the picture. Their fix recomputes flash timings before
+raising the clock, executed from RAM. **Open question: we already run 300 MHz
+undivided and they were failing at 252.** Why ours works is not understood, and
+that should be answered before assuming 396 is only a matter of bring-up steps.
+
+**Not a cost after all:** freesci ran 396 MHz at `vreg_set_voltage(1.30)`, which
+is what we already set (`picocalc_nes.cpp:114`). pico-286's 1.60 V is not the
+required figure, so this item is cheaper in heat and battery than first written.
+
+**Still a cost:** it drags the LCD along, since `boot_menu.cpp:216,232` set
+`set_spi_speed(SYS_CLK_FREQ / 4)` — LCD SPI would go 75 -> 99 MHz, an untested
+panel overclock riding on an unrelated change. The LCD is PIO-based
+(`picocalc.cpp:261`, `div = sys/2/speed`), so **pin the LCD to 75 MHz explicitly
+before any sys-clock bump** so the two variables cannot move together.
+
+### Does the inherited table survive a change of `clk_sys`?
+
+freesci records as a wrong guess that *holding the SPI rate constant does not
+hold the sampling phase*: the PIO input synchronizer is clocked by `clk_sys`, so
+its latency shrinks ~15 ns -> ~5 ns and MISO arrives most of a bit period early.
+Taken at face value this would sink the whole inherit-the-table approach, since
+pico-286 measured its table at 396 MHz `clk_sys` and we would apply it at 300.
+
+**It probably does not apply to our copy.** Our driver bypasses the synchronizer
+on MISO (`rp2040-psram/psram_spi.pio:86`,
+`hw_set_bits(&pio->input_sync_bypass, 1u << pin_miso)`), which removes the
+`clk_sys`-dependent term. What remains — pad, PCB and PSRAM t_CO delay — is fixed
+nanoseconds, so holding SCK constant does hold the phase to first order.
+freesci's copy is an older fork (it has no `PSRAM_FUDGE` equivalent) and likely
+lacks the bypass.
+
+This is reasoning, not a measurement, and it is the assumption the inherit
+decision rests on — so it is the first thing to doubt if an inherited operating
+point misbehaves. It also identifies the dependency precisely: the table travels
+across `clk_sys` **because of** the bypass, not automatically.
+
+**Also recorded, from freesci's other wrong guess:** deriving the divisor from
+the *requested* clock rather than the achieved one puts SPI somewhere absurd if
+`set_sys_clock_khz` falls back — a dead bus that looks exactly like an overclock
+failure. `psram_loader.cpp:160` derives from the compile-time `SYS_CLK_FREQ`.
+Our `set_sys_clock_khz(..., true)` asserts rather than falling back, so we would
+halt instead of running wrong, but deriving from `clock_get_hz(clk_sys)` is
+strictly more robust and is the same lesson as the build-system trap below.
 
 ### Build-system trap to adopt regardless
 

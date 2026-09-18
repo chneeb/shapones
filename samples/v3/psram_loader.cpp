@@ -148,14 +148,28 @@ bool psram_loader_init() {
         free(chr_full_cache);
         chr_full_cache = nullptr;
     }
-    // PSRAM reliability at these clocks is a sampling-PHASE problem, not a raw
-    // speed one: a timing sweep showed pass/fail oscillating with clkdiv,
-    // failing at both fast and slow ends. The known-good operating point is a
-    // ~100 MHz state-machine clock (SCK ~50 MHz) with the non-fudge PIO program,
-    // so clkdiv is SYS_CLK_FREQ / 100 MHz: 2.5 @ 250 MHz, 3.0 @ 300 MHz. If you
-    // change SYS_CLK_FREQ, keep SM ≈ 100 MHz and re-verify with a full bulk
-    // read/verify sweep — a 16-byte round-trip is too weak to catch marginal
+    // Operating point: ~100 MHz state-machine clock (SCK ~50 MHz) with the
+    // PLAIN (non-fudge) PIO program, so clkdiv is SYS_CLK_FREQ / 100 MHz:
+    // 2.5 @ 250 MHz, 3.0 @ 300 MHz.
+    //
+    // What governs reliability is the PIO program choice, COUPLED to the clock
+    // — not, as this comment used to claim, an oscillating sampling-phase
+    // window failing at both ends. psram_spi.pio documents the fudge variant's
+    // extra read-sync cycle as required ABOVE 83 MHz SPI and wrong below it; a
+    // sweep on the same PCB (~/Source/pico-286) had the plain program passing
+    // monotonically at 49/66/79/99 MHz. Getting the pairing wrong is a DEAD
+    // BUS: past 83 MHz SPI the `false` below must become `true`.
+    //
+    // We sit on the 49 MHz row; that sweep soak-tested 99 MHz + fudge at
+    // ~5.0 MB/s. See ROADMAP.md §1 — those numbers are inherited from another
+    // board and unmeasured here, so do not change the divisor without a full
+    // bulk read/verify; a 16-byte round-trip is too weak to catch marginal
     // timing.
+    //
+    // The divisor holds its sampling phase across a change of SYS_CLK_FREQ only
+    // because psram_spi.pio bypasses the PIO input synchronizer on MISO (the
+    // one clk_sys-dependent term); what is left is fixed-ns pad/PCB/t_CO delay.
+    // Lose that bypass and the phase moves with the system clock.
     static_assert(SYS_CLK_FREQ % (100 * MHZ) == 0, "pick a clkdiv for this clock");
     g_spi = psram_spi_init_clkdiv(pio1, -1, (float)SYS_CLK_FREQ / (100 * MHZ), false);
     for (int i = 0; i < PRG_SLOTS; i++) { prg_cache_bank[i] = -1; prg_slot_stamp[i] = 0; }
