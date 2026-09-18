@@ -52,8 +52,10 @@ slow ends. The sweep shows otherwise: the plain program passes monotonically at
 below its valid range. `psram_spi.pio` documents the fudge variant's extra
 read-sync cycle as required above **83 MHz** SPI and wrong below it. So this is
 not an oscillating window to be feared — it is one coupled two-state choice.
-The current "do not change the divisor" warning is more forbidding than the
-evidence supports, and should be rewritten when step 1 lands.
+That explanation has been corrected in `CLAUDE.md`. The "do not change the
+divisor without a full bulk read/verify" rule **stands** — not because the
+window is narrow, but because everything below is inherited from another
+board and unmeasured on this firmware.
 
 **The coupling is the actual trap:** SM below ~166 MHz needs `fudge=false`,
 above needs `fudge=true`. Our call passes `false`. Raising the clock past
