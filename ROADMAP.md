@@ -17,6 +17,36 @@ comparable hardware supplied most of that evidence:
 
 ---
 
+## 0. Standing constraint: 1.30 V, and the clock stays high
+
+**Core voltage stays at `VREG_VOLTAGE_1_30`** (`picocalc_nes.cpp:114`). This is
+a decision, not a default. Two reasons:
+
+- The PicoCalc is battery-powered, and within one voltage core dynamic power is
+  linear in clock, while a voltage step is quadratic: 1.60 V costs
+  (1.60/1.30)^2 = **1.51x** before a single extra megahertz (pico-286 `6a564e3`).
+- More decisive: `VREG_VOLTAGE_MAX = VREG_VOLTAGE_1_30` in the SDK
+  (`hardware/vreg.h`). 1.60 V is **above the SDK's sanctioned maximum** and
+  requires defeating that limit. That is a different class of risk from an
+  overclock.
+
+So **396 MHz is off the table** — pico-286 device-tested that it needs 1.60 V
+(`1a8dfbd`: 1.30 V hangs, 1.20 V does not start, with or without slower flash).
+
+**The clock does not come down, though.** Lowering it is the obvious way to save
+power and the wrong trade here: we are Core-0-bound (PSRAM misses and scanline
+conversion), power within a voltage is only linear in clock, and 240 MHz would
+buy ~20% core power for a direct fps loss. If battery life later becomes a goal
+rather than a constraint, the lever to reach for first is the **backlight** —
+pico-286 calls it the largest consumer on this board that costs nothing in
+emulation speed and cannot destabilise anything (`652ecc9`).
+
+**The ceiling at 1.30 V is 360 MHz**, not 300: pico-286's "High" profile is
+360 MHz at `VREG=15` — which is 1.30 V, since `VREG_VOLTAGE_1_30 = 0b01111`.
+Marked worked-but-not-soaked. See step 2 below.
+
+---
+
 ## 1. PSRAM SPI clock: we are leaving ~1.25-1.9x on the table
 
 **Today:** `samples/v3/psram_loader.cpp:160` runs `psram_spi_init_clkdiv(pio1,
@@ -80,57 +110,68 @@ board and unmeasured on this firmware.
 above needs `fudge=true`. Our call passes `false`. Raising the clock past
 83 MHz SPI without also flipping that argument gives a **dead bus**.
 
-### Step 1 — 1.5x, no overclock (do first)
+### Step 1 — 1.5x, no overclock, and device-verified (do first)
 
 Stay at 300 MHz; change clkdiv 3.0 -> **2.0** => 150 MHz SM = **75 MHz SPI**,
-keep `fudge=false`. Exact integer divisor (no fractional jitter), comfortably
-under the 83 MHz fudge threshold, and bracketed by the verified 66 and 79 MHz
-plain passes. One-line change plus the `static_assert` at
-`psram_loader.cpp:159`.
+keep `fudge=false`. Exact integer divisor, comfortably under the 83 MHz fudge
+threshold. One-line change plus the `static_assert` at `psram_loader.cpp:159`.
 
-### Step 2 — the rest of it
+**This is no longer an inference.** pico-286 `1a8dfbd` records as a
+device-verified operating point: *"300 MHz runs at 1.30 V, paired with
+`PSRAM_SM_CLOCK_VAL=150000000` and `PSRAM_FUDGE_VAL=0` for an exact divider."*
+Same PCB, same library, same system clock, same voltage, same PIO program —
+their "Medium" profile, and what their board is currently running. It also
+moots the `clk_sys` question below for this step, since nothing about our clock
+differs from the measurement.
 
-100 MHz SPI requires `fudge=true`. At 300 MHz that is clkdiv **1.5** =>
-200 MHz SM, which works but is a *fractional* divider: PIO alternates cycle
-lengths, putting duty jitter on SCK. pico-286 chose 396 MHz specifically to get
-an exact divide-by-2 and avoid this. So this is the one point genuinely worth
-soak-testing on our own firmware rather than inheriting.
+### ~~Withdrawn: 100 MHz SPI at 300 MHz~~ (dead end, do not attempt)
 
-### Step 3 — sys-clock overclock (keep separate)
+100 MHz SPI needs `fudge=true`, and at 300 MHz that is clkdiv **1.5**. Earlier
+drafts called this "worth soak-testing" with duty jitter as the caveat.
+pico-286 `652ecc9` is blunter and correct: the PIO divider is 16.8 fixed-point
+and **dithers the cycle length** on a fractional value rather than dividing
+evenly, which is *"fatal for a bus whose reliability is a sampling-phase
+problem."* They now refuse a non-exact rate at boot outright.
 
-396/400 MHz buys an exact ÷2 *and* ~32% more emulator CPU. freesci-archive got
-396 MHz device-confirmed (`210f2abc`: decode 1.6-1.9x faster), so the headroom
-exists. But the bulk of that commit is **bring-up that has nothing to do with
-the PSRAM divisor**, and two of its four pieces apply to us.
+At 300 MHz the exact dividers give 150 / 100 / 75 / 50 MHz SPI. **There is no
+~100 MHz point.** Getting past 75 MHz SPI therefore requires changing the
+system clock, which is the step below — the two were never separable.
 
-**Prerequisite A — pin `clk_peri`.** The SDK's `set_sys_clock_pll()` ties
-`clk_peri` to `clk_sys` **undivided** ("reference clock for UART and SPI
-serial"). We pin it nowhere — there is no `clock_configure` in `samples/v3/` or
-`samples/fatfs/`. The LCD and PSRAM are PIO and immune (own clkdivs), but the
-**SD card is hardware `spi0`** (`mmc_pico_spi.c:127`), so a sys-clock bump
-clocks that block with it. freesci's symptom was serial dying right after the
-clock print and a HardFault on load, i.e. corrupt SD reads feeding the resource
-loader. Not a bug today — `clk_peri` is already 300 MHz and the SD works — but
-a hard prerequisite above that.
+### Step 2 — 360 MHz at 1.30 V (the real ceiling)
 
-**Prerequisite B — understand the flash/QMI question first.** QMI divides
-`clk_sys` for flash, so an undivided high clock corrupts XIP: dead before
-serial, with TFT noise. That, not PSRAM, is what freesci's earlier "RULED OUT,
-do not retry" verdict actually was — they had been turning the PSRAM knob while
-flash timing was never in the picture. Their fix recomputes flash timings before
-raising the clock, executed from RAM. **Open question: we already run 300 MHz
-undivided and they were failing at 252.** Why ours works is not understood, and
-that should be answered before assuming 396 is only a matter of bring-up steps.
+pico-286's "High" profile: **`CPU=360`, `VREG=15` (= 1.30 V), `PSRAM_SPI=90`,
+`PSRAM_FUDGE=1`**. 360/2 = 180 MHz SM = **90 MHz SPI**, an exact divide-by-2,
+with fudge correctly on (above the 83 MHz threshold). Marked *worked but not
+soaked*.
 
-**Not a cost after all:** freesci ran 396 MHz at `vreg_set_voltage(1.30)`, which
-is what we already set (`picocalc_nes.cpp:114`). pico-286's 1.60 V is not the
-required figure, so this item is cheaper in heat and battery than first written.
+That is the attractive package: ~90% of the PSRAM gain (90 vs 99 MHz) **plus
+20% more emulator CPU**, at our existing voltage and inside the SDK's supported
+range. Roughly 1.2x core dynamic power against today, versus ~2x for
+396 MHz/1.60 V.
 
-**Still a cost:** it drags the LCD along, since `boot_menu.cpp:216,232` set
-`set_spi_speed(SYS_CLK_FREQ / 4)` — LCD SPI would go 75 -> 99 MHz, an untested
-panel overclock riding on an unrelated change. The LCD is PIO-based
-(`picocalc.cpp:261`, `div = sys/2/speed`), so **pin the LCD to 75 MHz explicitly
-before any sys-clock bump** so the two variables cannot move together.
+Three prerequisites, none of them the PSRAM divisor:
+
+**A — flash divisor (see section 2; blocking).** Ours is 2, so 360 MHz would
+put flash at **180 MHz**. This must be settled first and it is already
+questionable at 300.
+
+**B — pin `clk_peri`.** The SDK's `set_sys_clock_pll()` ties `clk_peri` to
+`clk_sys` **undivided** ("reference clock for UART and SPI serial"). We pin it
+nowhere — no `clock_configure` in `samples/v3/` or `samples/fatfs/`. The LCD and
+PSRAM are PIO and immune (own clkdivs), but the **SD card is hardware `spi0`**
+(`mmc_pico_spi.c:127`), so it rides the system clock. freesci-archive's symptom
+at 396 MHz was serial dying right after the clock print and a HardFault on load
+— corrupt SD reads feeding the resource loader.
+
+**C — pin the LCD.** `boot_menu.cpp:216,232` set
+`set_spi_speed(SYS_CLK_FREQ / 4)`, so LCD SPI would go 75 -> 90 MHz as a side
+effect. The LCD is PIO-based (`picocalc.cpp:261`, `div = sys/2/speed`), so pin
+it at 75 MHz explicitly first, and let a panel overclock be its own experiment.
+
+**Ordering matters when raising:** voltage first, then clock — and flash before
+both. pico-286's README is explicit that from a 396 build, `VREG=15` before
+`CPU=360` momentarily runs 396 MHz at 1.30 V and hangs. We are raising rather
+than lowering, so: flash timing, then (unchanged) voltage, then clock.
 
 ### Does the inherited table survive a change of `clk_sys`?
 
@@ -179,7 +220,79 @@ is real, not a rounded-down 80 as happened in the InfoNES port.
 
 ---
 
-## 2. PAL region detection
+## 2. Flash divisor — a live question about what we ship today
+
+**Not just an overclock prerequisite.** `pico2.h:75` sets
+**`PICO_FLASH_SPI_CLKDIV 2`** and we override it nowhere, so if that is what is
+in effect at our 300 MHz, flash is running at **150 MHz** — above the ~133 MHz
+these parts are typically rated for.
+
+The board plainly works, so this is a question, not a known defect. But "works
+at room temperature on one board" is exactly how marginal XIP presents, and the
+divisor does **not** adjust when the clock changes: pico-286's README states a
+300 MHz build gets divisor 3 (100 MHz flash, *"only safe up to 300 MHz"*) and a
+396 build gets divisor 4, and that raising the clock at runtime without setting
+flash first puts it at 120 MHz (at 360) or 132 MHz (at 396) *while the code
+doing it is executing from flash*. That is what freesci-archive's
+dead-before-serial at 252 MHz was.
+
+**Cheap and worth doing first:** print `QMI_M0_TIMING` (or the derived flash
+clock) at boot, so the number is visible on the device rather than inferred from
+a header. This is the same lesson as the build-system trap in section 1 — a knob
+that silently fails to apply should be observable.
+
+Then, if it is 150 MHz: decide whether to set the divisor explicitly. It is
+blocking for section 1 step 2, since 360 MHz at divisor 2 would be 180 MHz.
+
+---
+
+## 3. QPI — the largest single PSRAM win available, and the pins are already free
+
+pico-286 `e262c7b` verified against the **ClockworkPi Mainboard V2.0 schematic**
+that the part is an **ESP-PSRAM64H** with all four data lines routed:
+RAM_TX/RAM_RX/RAM_IO2/RAM_IO3 land on chip pins 5/2/3/7 = SIO0–SIO3.
+
+The arithmetic: a 32-bit access is **72 cycles single-bit against 22 in QPI**,
+so ~5.5 -> ~18 MB/s at 99 MHz (against a measured 5.0). That is ~3.3x *on top
+of* anything in section 1, and it matters more here than there because PSRAM
+misses sit on Core 0's critical path inside `cpu::service()`.
+
+**GP4/GP5 are already free on our side.** Our build defines `DISABLE_NUNCHUCK`
+precisely because those pins conflict with PSRAM on this PCB — so the pins the
+extra data lines need are the ones we already gave up. The blocker is software.
+
+**But it is real driver work, not a flag.** Our submodule has the PIO program —
+`rp2040-psram/psram_spi.pio:93` defines `qspi_psram`, and line 132 bypasses the
+input synchronizer across all four SIO pins — but there are **no QPI symbols in
+`psram_spi.h`/`psram_spi.c`**. The C driver never wires it up.
+
+Caveats worth carrying, all from `e262c7b`:
+
+- A schematic proves *intent*, not a particular board.
+- Those two lines have never been driven, so a fault would be invisible today.
+- A **QPI Read ID probe settles it** without touching the memory path — do that
+  before any driver work.
+- Validate with throughput **and** error count together: that separates "QPI
+  never engaged" from "engaged but the extra lines are broken" from "works". A
+  correctness-only test silently passes the first.
+
+### Why the caches stay valuable afterwards
+
+pico-286 `45f322d` records that memory-mapped PSRAM **cannot** be done on this
+board: the RP2350's QMI owns the dedicated QSPI pads and only chip select is a
+free GPIO, so a device on ordinary GPIOs is unreachable by QMI regardless of
+software. There is no XIP-from-PSRAM path to fall back on, which makes a
+software cache the only option rather than a workaround — our PRG victim cache
+and full CHR pre-cache are the right shape.
+
+They also note an SRAM cache **compounds** with QPI rather than competing:
+per-transaction overhead grows as a fraction of a faster transfer, so anything
+that batches small accesses amortises more. Both caches keep their value after a
+QPI port.
+
+---
+
+## 4. PAL region detection
 
 **Today:** `samples/v3/picocalc_nes.cpp:285` hardcodes `FRAME_DELAY_US = 16666`
 and `core/include/shapones/cpu.hpp:8` defines only `CLOCK_FREQ_NTSC`, used at
@@ -216,7 +329,7 @@ detector guarantees the displayed label and the pacing used cannot disagree.
 
 ---
 
-## 3. Noise channel level
+## 5. Noise channel level
 
 **Today:** `core/src/apu.cpp:468` returns `vol >> 1` — noise at 0.5 of a pulse,
 close to the 2A03's true 0.66 — and `picocalc_nes.cpp:36` runs the APU at
@@ -241,7 +354,7 @@ bundle it with the cheap step. Neither project has tried it.
 
 ---
 
-## 4. Open bus / Bubble Bobble — a documentation fix, not a code fix
+## 6. Open bus / Bubble Bobble — a documentation fix, not a code fix
 
 `CLAUDE.md` records that reading write-only PPU registers
 ($2000/$2001/$2003/$2005/$2006) must return the last byte on the CPU data bus,
@@ -279,7 +392,7 @@ matches nothing at all, which is why that was visibly broken.
 
 ---
 
-## 5. Control-block DMA for the LCD
+## 7. Control-block DMA for the LCD
 
 **Today:** the interlaced path issues ~150 single-row async DMAs per frame, each
 started and *blocking-waited* by the CPU (`picocalc_nes.cpp:232-247`,
@@ -340,9 +453,16 @@ Two lessons:
 
 ## Suggested order
 
-**PSRAM step 1 (1) -> PAL (2) -> open-bus experiment (4) -> noise constant (3)
--> PSRAM steps 2/3 (1) -> control-block DMA (5)**
+**flash-divisor check (2) -> PSRAM step 1 (1) -> PAL (4) -> open-bus experiment
+(6) -> noise constant (5) -> QPI probe (3) -> 360 MHz at 1.30 V (1 step 2) ->
+QPI driver (3) -> control-block DMA (7)**
 
-The first four are small and independent. PSRAM step 1 goes first because it is
-one line for a verified 1.5x on our worst-case path. Only the last is a real
-project.
+The flash check goes first because it is the only item that questions the
+configuration we ship **today**, and it is a print statement. PSRAM step 1 next:
+one line, device-verified on this exact PCB at this exact clock and voltage.
+
+Then the small independent items. The QPI *probe* is cheap and comes before
+either of the big builds, because a negative result removes section 3 entirely
+and changes what 360 MHz is worth. 360 MHz is gated on the flash answer.
+
+Only the QPI driver and the control-block DMA are real projects.
