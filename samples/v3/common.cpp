@@ -144,6 +144,12 @@ void kbd_interrupt() {
             case ']'://A
                 set_kdb_key(0, key_stat);
                 break;
+            case 'w'://toggle immediate vs queued PPU register writes
+                if (key_stat == 1) {
+                    shapones::ppu::sync_reg_writes =
+                        !shapones::ppu::sync_reg_writes;
+                }
+                break;
             case 'o'://toggle write-only PPU register reads: open bus <-> 0
                 // Only meaningful before a ROM starts, so the boot menu shows
                 // the state and this is where you flip it. Toggling mid-game

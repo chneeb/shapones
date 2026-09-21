@@ -181,6 +181,10 @@ void deinit();
 result_t reset();
 int current_focus_y();
 
+// Apply PPU register writes immediately rather than queueing them.
+// Diagnostic; see the comment on the definition. ROADMAP.md section 6.
+extern volatile bool sync_reg_writes;
+
 uint8_t reg_read(addr_t addr);
 void reg_write(addr_t addr, uint8_t data);
 
