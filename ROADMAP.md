@@ -124,7 +124,10 @@ keep `fudge=false`. Exact integer divisor, comfortably under the 83 MHz fudge
 threshold. One-line change plus the `static_assert` at `psram_loader.cpp:159`.
 
 **Measured on our own board, 2026-09-21** (standalone benchmark, 256 KB
-verified in 8 KB blocks spread over the full 8 MB, 300 MHz / 1.30 V):
+verified in 8 KB blocks spread over the full 8 MB, 300 MHz / 1.30 V).
+**Caveat: these timings include the CPU verify pass** — see the note at the end
+of section 3. They understate read throughput and compress the ratio; treat the
+zero-error results as sound and the KB/s as a floor, not a measurement:
 
 | config | throughput | errors |
 |---|---|---|
@@ -500,15 +503,69 @@ read path only, which is why the cross-mode write passed; the QPI Read ID came
 back all zeros because it is a read too; and 100% wrong at 50 MHz against 93.75%
 at 75 MHz is two different wrong phases, not two different faults.
 
-**Two fixes:**
+### Confirmed, and it is clock-dependent (2026-09-21)
 
-- **(a) One value, to test the theory:** `read_quad_command[0]` 14 -> **13**,
-  dropping one dummy cycle to cancel the PIO's extra one.
-- **(b) The real fix, and what belongs upstream:** a non-fudge quad program
-  mirroring the SPI side, so the read-sync cycle follows the clock rate instead
-  of being baked in. The existing line also flips `pindirs` to input, so it
-  cannot simply be deleted — the side-set needs restructuring so the direction
-  change emits no clock edge.
+**Fix (a) as first written — "`read_quad_command[0]` 14 -> 13" — is
+impossible, and attempting it hangs the board.** That byte is not a dummy-cycle
+knob: it is the count of nibbles the PIO pulls from the TX FIFO, and the command
+buffer supplies exactly that many (9 bytes, 2 consumed by `out x,8` / `out y,8`,
+leaving 7 payload bytes = 14 nibbles). Raise it and the PIO waits for nibbles
+that never arrive, so the read DMA never completes. Lower it and leftover
+nibbles desync the next transaction. **The dummy count cannot be changed from C
+at all** — it is structural to the PIO program.
+
+So the offset was tested the other way, by correcting it in software
+(`picocalc-bench/realign.c`): read one byte early, shift back one nibble,
+`byte k = (raw[k] & 0x0F) << 4 | (raw[k+1] >> 4)`.
+
+| SCK | stock QPI read | realigned |
+|---|---|---|
+| 50 MHz | 16384 errors | **0 errors** |
+| 75 MHz | 15360 errors | 15360 errors |
+
+**At 50 MHz the model is exactly right.** A constant one-nibble offset, and once
+corrected the data is perfect over 16 KB. The data path and all four lines are
+sound; the only fault is read latency.
+
+**At 75 MHz it is a different fault.** The raw nibbles are not shifted — they are
+*blended*. Checked numerically against the pattern, the sampled stream satisfies
+
+```
+received[i] == true[i] | true[i+1]        (14 of 15 nibbles; the miss is
+                                           index 0, the first after turnaround)
+```
+
+Every sampled nibble is the **bitwise OR of two consecutive true nibbles**. That
+is a setup/hold violation: the sample point straddles the data transition, so any
+line high in either nibble reads high. Note the alignment also moved — at 50 MHz
+we catch `true[i+1]`, at 75 MHz `true[i]` contaminated by its successor — which
+is what a *fixed nanosecond* data delay does as the clock period shrinks.
+
+**So the fix is not a constant latency adjustment.** It is the sample edge, and
+the right choice depends on clock rate — exactly what the fudge mechanism exists
+for on the SPI side, and exactly the variant the quad program does not have. Fix
+(b) stands but is bigger than "drop one turnaround cycle": the quad program needs
+a rate-appropriate read phase, and the threshold on this board is somewhere at or
+below 75 MHz, not the 83 MHz the comment cites.
+
+### Caveat on every throughput figure above (2026-09-21)
+
+**The benchmark timed the verify loop along with the read.** `main.c` put the
+per-byte comparison inside the timed region — deliberately, to stop the compiler
+eliding the reads, which was the wrong trade. So the 4097 / 5546 KB/s figures for
+SPI are read **plus** CPU verification, not read throughput, and the constant CPU
+cost also compresses the 50->75 ratio. **The conclusion drawn from it — that the
+driver is transaction-bound and 99 MHz would land at the low end of the range —
+is probably an artifact and should not be relied on.**
+
+The realign firmware times reads only, and measured **21978 KB/s for QPI at
+50 MHz** — against a theoretical quad ceiling of 25 MB/s at that clock, so ~86%
+of line rate. QPI is genuinely running at full quad speed. Single-bit SPI cannot
+exceed 6.25 MB/s at 50 MHz, so once the read phase is fixed the gain over our
+current path is **well above** the 1.6-2.1x recorded earlier.
+
+A clean read-only A/B of SPI against QPI is still owed before any number here is
+quoted as final.
 
 **Next:** `picocalc-bench/sweep.c` sweeps `read_quad_command[0]` over 12-16
 against clkdiv 3.0 / 2.0 / 1.5, verifying each combination with the pattern
