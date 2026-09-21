@@ -6,6 +6,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
+#include "hardware/dma.h"
 
 #include "psram_spi.h"
 #include "shapones/memory.hpp"
@@ -63,28 +64,59 @@ static const char *g_psram_mode = "?";
 // field counts BITS (so ≤ 31 bytes read, ≤ 27 write); in QPI it counts NIBBLES,
 // which is why the same field reaches four times further. Part of QPI's
 // throughput win is this larger chunk, not just the four data lines.
+static bool psram_xfer(psram_spi_inst_t *s, const uint8_t *cmd, size_t cmd_len,
+                       uint8_t *dst, size_t dst_len);
+
 // QPI reaches four times further per call, so the chunk follows the mode we
 // actually ended up in - see psram_enter_qpi(), which falls back to SPI.
 static inline int rd_chunk() { return g_spi.quad ? 127 : 31; }
 static inline int wr_chunk() { return g_spi.quad ? 123 : 27; }
 
+// Both of these go through psram_xfer(), so a wrong mode or an unresponsive
+// part produces wrong data rather than a frozen board. That matters most at
+// boot, where a hang leaves nothing on screen to diagnose from.
 static void psram_read_n(uint32_t addr, uint8_t *dst, size_t count) {
     while (count > 0) {
         size_t n = (count > (size_t)rd_chunk()) ? (size_t)rd_chunk() : count;
-        psram_read(&g_spi, addr, dst, n);
-        addr  += n;
-        dst   += n;
-        count -= n;
+        uint8_t cmd[9];
+        size_t cmd_len;
+        if (g_spi.quad) {   // 0xEB + address + 3 dummy bytes; lengths in nibbles
+            cmd[0] = 14; cmd[1] = (uint8_t)(n * 2 - 1); cmd[2] = 0xEBu;
+            cmd[6] = cmd[7] = cmd[8] = 0;
+            cmd_len = 9;
+        } else {            // 0x0B + address + 1 dummy byte; lengths in bits
+            cmd[0] = 40; cmd[1] = (uint8_t)(n * 8); cmd[2] = 0x0Bu;
+            cmd[6] = 0;
+            cmd_len = 7;
+        }
+        cmd[3] = (uint8_t)(addr >> 16);
+        cmd[4] = (uint8_t)(addr >> 8);
+        cmd[5] = (uint8_t)addr;
+        if (!psram_xfer(&g_spi, cmd, cmd_len, dst, n)) {
+            printf("psram: read timeout at 0x%06lX\n", (unsigned long)addr);
+            memset(dst, 0, n);
+        }
+        addr += n; dst += n; count -= n;
     }
 }
 
 static void psram_write_n(uint32_t addr, const uint8_t *src, size_t count) {
     while (count > 0) {
         size_t n = (count > (size_t)wr_chunk()) ? (size_t)wr_chunk() : count;
-        psram_write(&g_spi, addr, src, n);
-        addr  += n;
-        src   += n;
-        count -= n;
+        // Header and payload in one buffer, so there is no DMA restart gap in
+        // the middle of a transaction - the library issues these as two
+        // transfers, which leaves the state machine to stall between them.
+        uint8_t buf[6 + 123];
+        buf[0] = g_spi.quad ? (uint8_t)((4 + n) * 2) : (uint8_t)((4 + n) * 8);
+        buf[1] = 0;
+        buf[2] = g_spi.quad ? 0x38u : 0x02u;
+        buf[3] = (uint8_t)(addr >> 16);
+        buf[4] = (uint8_t)(addr >> 8);
+        buf[5] = (uint8_t)addr;
+        memcpy(buf + 6, src, n);
+        if (!psram_xfer(&g_spi, buf, 6 + n, nullptr, 0))
+            printf("psram: write timeout at 0x%06lX\n", (unsigned long)addr);
+        addr += n; src += n; count -= n;
     }
 }
 
@@ -148,6 +180,46 @@ void psram_sync_chr() {}
 // Sequence: come up in SPI, send Enter QPI (0x35, 8 BITS in SPI framing), drop
 // the SPI instance, then re-init with the quad program. Quad init deliberately
 // skips the 0x66/0x99 reset, which are SPI-mode commands.
+// The boot path must not be able to hang. Every psram_read/psram_write in the
+// library waits on its DMA forever, so a chip that is in the wrong mode - or
+// simply not answering - takes the whole boot with it rather than failing. The
+// standalone test firmware never hit this because it bounded every transfer;
+// the loader did not, and a stuck boot is exactly what that cost.
+static bool psram_xfer(psram_spi_inst_t *s, const uint8_t *cmd, size_t cmd_len,
+                       uint8_t *dst, size_t dst_len) {
+    constexpr uint32_t TIMEOUT_US = 20000;
+    dma_channel_transfer_from_buffer_now(s->write_dma_chan, cmd, cmd_len);
+    dma_channel_transfer_to_buffer_now(s->read_dma_chan, dst, dst_len);
+    absolute_time_t dl = make_timeout_time_us(TIMEOUT_US);
+    while ((dma_channel_is_busy(s->write_dma_chan) || dma_channel_is_busy(s->read_dma_chan))
+           && absolute_time_diff_us(get_absolute_time(), dl) > 0) {
+        tight_loop_contents();
+    }
+    if (!dma_channel_is_busy(s->write_dma_chan) && !dma_channel_is_busy(s->read_dma_chan))
+        return true;
+    dma_channel_abort(s->write_dma_chan);
+    dma_channel_abort(s->read_dma_chan);
+    pio_sm_set_enabled(s->pio, s->sm, false);
+    pio_sm_clear_fifos(s->pio, s->sm);
+    pio_sm_restart(s->pio, s->sm);
+    pio_sm_exec(s->pio, s->sm, pio_encode_jmp(s->offset));
+    pio_sm_set_enabled(s->pio, s->sm, true);
+    return false;
+}
+
+// The part keeps its mode across a warm reset - a reflash resets the RP2350 but
+// not the PSRAM - so a previous run that ended in QPI leaves it in QPI, and the
+// next boot's SPI-framed commands land on a chip that is not listening. That is
+// what turned a passing self test into a hung one between two builds: the same
+// code, a different starting mode. Normalise before assuming anything.
+static void psram_force_spi(PIO pio, float clkdiv) {
+    psram_spi_inst_t q = psram_spi_init_clkdiv(pio, -1, clkdiv, false, true);
+    uint8_t exit_qpi[] = { 2, 0, 0xF5u };   // QPI framing: length counts nibbles
+    psram_xfer(&q, exit_qpi, sizeof(exit_qpi), nullptr, 0);
+    pio_sm_set_enabled(pio, q.sm, false);
+    psram_spi_uninit(q);
+}
+
 static constexpr uint32_t QPI_MARKER_ADDR = 0;
 static const uint8_t QPI_MARKER[16] = {
     0x5A, 0xA5, 0x0F, 0xF0, 0x33, 0xCC, 0x69, 0x96,
@@ -155,6 +227,10 @@ static const uint8_t QPI_MARKER[16] = {
 };
 
 static psram_spi_inst_t psram_enter_qpi(PIO pio, float clkdiv) {
+    // Whatever the last run left behind, get the part back to SPI first. The
+    // SPI init below then sends the 0x66/0x99 reset from a known state.
+    psram_force_spi(pio, clkdiv);
+
     psram_spi_inst_t s = psram_spi_init_clkdiv(pio, -1, clkdiv, false, false);
 
     // Marker written over single-bit SPI and read back over QPI below. Both
@@ -178,7 +254,15 @@ static psram_spi_inst_t psram_enter_qpi(PIO pio, float clkdiv) {
 
     uint8_t back[sizeof(QPI_MARKER)];
     memset(back, 0, sizeof(back));
-    psram_read(&q, QPI_MARKER_ADDR, back, sizeof(back));
+    {   // Bounded equivalent of psram_read(): 0xEB, address, 3 dummy bytes.
+        // Length counts nibbles in QPI, minus one for the short read loop.
+        uint8_t cmd[9] = { 14, (uint8_t)(sizeof(back) * 2 - 1), 0xEBu,
+                           (uint8_t)(QPI_MARKER_ADDR >> 16),
+                           (uint8_t)(QPI_MARKER_ADDR >> 8),
+                           (uint8_t)QPI_MARKER_ADDR, 0, 0, 0 };
+        if (!psram_xfer(&q, cmd, sizeof(cmd), back, sizeof(back)))
+            printf("psram: QPI marker read timed out\n");
+    }
     if (memcmp(QPI_MARKER, back, sizeof(back)) == 0) {
         printf("psram: QPI read path OK\n");
         g_psram_mode = "QPI";
