@@ -46,6 +46,14 @@ reference in `CLAUDE.md` and `ROADMAP.md` still resolve.
 
 **Known upstream issues left alone**, because nothing here depends on them:
 
+- `psram_spi_uninit()` **never disables the state machine** — there is no
+  `pio_sm_set_enabled` call anywhere in `psram_spi.c`. It removes the program
+  from instruction memory while the SM is still executing it, so the SM runs
+  whatever lands at those addresses and toggles CS/SCK/SIO at the part. This is
+  not theoretical: it put the chip back out of QPI mode and made every read
+  return zeros. `psram_loader.cpp` works around it by disabling the SM itself
+  before calling uninit. The library's own `psram_qpi_init()` has the same
+  pattern and the same exposure.
 - `psram_spi_uninit()` sends its `0xF5` exit-QPI *after* unclaiming both DMA
   channels, so the command may not go out at all.
 - That exit command is mis-sized: `{8, 0, 0xF5}` asks for 8 nibbles in QPI

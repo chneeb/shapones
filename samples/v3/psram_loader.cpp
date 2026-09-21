@@ -145,12 +145,47 @@ void psram_sync_chr() {}
 // Sequence: come up in SPI, send Enter QPI (0x35, 8 BITS in SPI framing), drop
 // the SPI instance, then re-init with the quad program. Quad init deliberately
 // skips the 0x66/0x99 reset, which are SPI-mode commands.
+static constexpr uint32_t QPI_MARKER_ADDR = 0;
+static const uint8_t QPI_MARKER[16] = {
+    0x5A, 0xA5, 0x0F, 0xF0, 0x33, 0xCC, 0x69, 0x96,
+    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF
+};
+
 static psram_spi_inst_t psram_enter_qpi(PIO pio, float clkdiv) {
     psram_spi_inst_t s = psram_spi_init_clkdiv(pio, -1, clkdiv, false, false);
+
+    // Marker written over single-bit SPI and read back over QPI below. Both
+    // halves of that are device-proven, so it separates the QPI READ path from
+    // the QPI WRITE path here at init instead of at first use.
+    psram_write(&s, QPI_MARKER_ADDR, QPI_MARKER, sizeof(QPI_MARKER));
+
     uint8_t enter_qpi[] = { 8, 0, 0x35u };
     pio_spi_write_read_dma_blocking(&s, enter_qpi, 3, 0, 0);
+
+    // Stop the state machine BEFORE its program is torn down.
+    // psram_spi_uninit() removes the program from instruction memory without
+    // ever disabling the SM (it contains no pio_sm_set_enabled call at all),
+    // so the SM carries on executing whatever now sits at those addresses and
+    // toggles CS/SCK/SIO at the part - which can put it straight back out of
+    // QPI. That is what made the first QPI build read all zeros.
+    pio_sm_set_enabled(pio, s.sm, false);
     psram_spi_uninit(s);   // quad == false here, so no stray exit command
-    return psram_spi_init_clkdiv(pio, -1, clkdiv, false, true);
+
+    psram_spi_inst_t q = psram_spi_init_clkdiv(pio, -1, clkdiv, false, true);
+
+    uint8_t back[sizeof(QPI_MARKER)];
+    memset(back, 0, sizeof(back));
+    psram_read(&q, QPI_MARKER_ADDR, back, sizeof(back));
+    if (memcmp(QPI_MARKER, back, sizeof(back)) == 0) {
+        printf("psram: QPI read path OK\n");
+    } else {
+        printf("psram: QPI read of SPI-written marker FAILED\n  want:");
+        for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", QPI_MARKER[i]);
+        printf("\n  got :");
+        for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", back[i]);
+        printf("\n");
+    }
+    return q;
 }
 
 bool psram_loader_init() {
