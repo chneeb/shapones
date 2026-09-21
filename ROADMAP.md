@@ -123,7 +123,28 @@ Stay at 300 MHz; change clkdiv 3.0 -> **2.0** => 150 MHz SM = **75 MHz SPI**,
 keep `fudge=false`. Exact integer divisor, comfortably under the 83 MHz fudge
 threshold. One-line change plus the `static_assert` at `psram_loader.cpp:159`.
 
-**This is no longer an inference.** pico-286 `1a8dfbd` records as a
+**Measured on our own board, 2026-09-21** (standalone benchmark, 256 KB
+verified in 8 KB blocks spread over the full 8 MB, 300 MHz / 1.30 V):
+
+| config | throughput | errors |
+|---|---|---|
+| SPI 50 MHz (clkdiv 3.0, today) | **4097 KB/s** | 0 |
+| SPI 75 MHz (clkdiv 2.0, step 1) | **5546 KB/s** | 0 |
+
+**+35% for a one-line change, with zero errors.** Step 1 is confirmed here, not
+merely inherited.
+
+Two corrections to this section fall out of those numbers:
+
+- **Our baseline is 4097 KB/s, not the 2674 KB/s inherited from pico-286** at
+  the same 50 MHz. Our 31-byte chunking evidently does better than whatever
+  they measured. So the inherited table's *absolute* figures do not transfer to
+  us; treat it as ratios only.
+- **1.5x the clock gives 1.35x the throughput**, so the driver is partly
+  transaction-bound here exactly as freesci-archive reported. Extrapolating,
+  99 MHz SPI would land near the **low** end of the 1.25-1.9x range above.
+
+It was also corroborated independently. pico-286 `1a8dfbd` records as a
 device-verified operating point: *"300 MHz runs at 1.30 V, paired with
 `PSRAM_SM_CLOCK_VAL=150000000` and `PSRAM_FUDGE_VAL=0` for an exact divider."*
 Same PCB, same library, same system clock, same voltage, same PIO program —
@@ -408,6 +429,36 @@ PicoCalc* (<https://forum.clockworkpi.com/t/psram-on-the-picocalc/17176>):
 CS=GP20, SCK=GP21, MOSI/SIO0=GP2, MISO/SIO1=GP3, board *"connected for QSPI
 setup"* per schematic, and the consecutive-GPIO requirement restated. Third
 independent source agreeing with the table above.
+
+### First QPI measurement here: fast, but wrong (2026-09-21)
+
+Same standalone firmware, same 256 KB verify:
+
+| config | throughput | errors |
+|---|---|---|
+| QPI 50 MHz | 10257 KB/s | **100%** |
+| QPI 75 MHz | 12135 KB/s | **93.75%** |
+
+**Throughput does not prove QPI engaged.** The PIO clocks out 4-bit frames at
+4-bit speed whether or not the chip ever entered QPI mode, so ~2.5x the SPI rate
+is consistent with a chip still listening in SPI and returning nonsense. Three
+causes remain open: the chip never entered QPI; it did but SIO2/SIO3 (GP4/GP5)
+do not work; or the quad program's sampling phase is wrong at these divisors.
+Writes went through QPI too, so we do not even know the array holds the pattern.
+
+One clue: at 75 MHz exactly **16384 of 262144 bytes were correct — precisely
+1/16**, where chance would give 1/256. 1/16 is what results when two of the four
+data lines return a constant: each nibble matches with probability 1/4, each byte
+with 1/16. That is the signature of half the data bus not returning data, which
+would point at GP4/GP5. Suggestive, not conclusive — at 50 MHz *zero* bytes were
+correct, which that model alone does not explain, so phase is likely involved.
+
+**Next step is the diagnostic probe, not more throughput work**
+(`~/Source/rp2040-psram-qspi-test/picocalc-bench/probe.c`): Read ID in both
+modes, since a known-answer read settles engagement without depending on what is
+in memory; plus cross-mode write/read, since entering QPI does not disturb the
+array, so writing in one mode and reading in the other isolates which path is at
+fault.
 
 ### Transfer width is a separate lever, and may be cheaper than QPI
 
