@@ -112,7 +112,41 @@ static SHAPONES_INLINE uint8_t set_nz(uint8_t value) {
   return value;
 }
 
+// Last few pushes, dumped once if the stack collapses. A runaway stack says
+// only that something went wrong; the PCs say what. A repeating pair is a JSR
+// loop, a PC at the NMI vector is interrupts nesting, and a scattered trail is
+// the CPU executing data. Two stores per push, and it prints nothing unless the
+// stack actually runs away. See ROADMAP.md section 6.
+#ifndef SHAPONES_TRACE_STACK
+#define SHAPONES_TRACE_STACK 1
+#endif
+#if SHAPONES_TRACE_STACK
+static constexpr int PUSH_TRACE_LEN = 48;
+static struct { uint16_t pc; uint8_t sp; } push_trace[PUSH_TRACE_LEN];
+static uint8_t push_trace_pos = 0;
+static bool push_trace_dumped = false;
+
+static void dump_push_trace(const char *why) {
+  if (push_trace_dumped) return;
+  push_trace_dumped = true;
+  SHAPONES_PRINTF("--- last %d pushes before %s (oldest first) ---\n",
+                  PUSH_TRACE_LEN, why);
+  for (int i = 0; i < PUSH_TRACE_LEN; i++) {
+    int j = (push_trace_pos + i) % PUSH_TRACE_LEN;
+    SHAPONES_PRINTF("  %2d: PC=0x%04x SP=0x%02x\n", i, (unsigned)push_trace[j].pc,
+                    (unsigned)push_trace[j].sp);
+  }
+  SHAPONES_PRINTF("--- end of trace, NMI vector=0x%04x ---\n",
+                  (unsigned)nmi_vector);
+}
+#endif
+
 static SHAPONES_INLINE void push(uint8_t value) {
+#if SHAPONES_TRACE_STACK
+  push_trace[push_trace_pos].pc = (uint16_t)reg.PC;
+  push_trace[push_trace_pos].sp = reg.SP;
+  push_trace_pos = (push_trace_pos + 1) % PUSH_TRACE_LEN;
+#endif
   if (reg.SP == 0) {
     SHAPONES_ERRORF("Stack Overflow at push()\n");
   } else if (reg.SP == 0x20) {
@@ -120,6 +154,9 @@ static SHAPONES_INLINE void push(uint8_t value) {
     if (!sp_warn) { sp_warn = true;
       SHAPONES_PRINTF("WARNING: SP=0x20 (stack 87%% full) PC=0x%04x\n",
                       (unsigned)reg.PC);
+#if SHAPONES_TRACE_STACK
+      dump_push_trace("SP reached 0x20");
+#endif
     }
   }
   bus_write(0x100 | reg.SP--, value);
