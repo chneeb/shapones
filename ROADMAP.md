@@ -261,10 +261,55 @@ misses sit on Core 0's critical path inside `cpu::service()`.
 precisely because those pins conflict with PSRAM on this PCB — so the pins the
 extra data lines need are the ones we already gave up. The blocker is software.
 
-**But it is real driver work, not a flag.** Our submodule has the PIO program —
-`rp2040-psram/psram_spi.pio:93` defines `qspi_psram`, and line 132 bypasses the
-input synchronizer across all four SIO pins — but there are **no QPI symbols in
-`psram_spi.h`/`psram_spi.c`**. The C driver never wires it up.
+### What the vendored library already gives us (checked 2026-09-21)
+
+We are pinned at **`419375d`, which *is* `polpo/rp2040-psram` `origin/main`** —
+fetched and confirmed empty `HEAD..origin/main`. Upstream has **not** added QPI
+driver support, and there is no newer version to move to. Its last commits are
+"Add PSRAM_DEBUG define" and, before it, "Init miso pin; necessary for RP2350
+support".
+
+But the `.pio` file already ships both halves of the PIO-level work:
+
+- **`.program qspi_psram`** (`psram_spi.pio:93`) — complete, with 4-bit write and
+  read loops and the same falling-edge read note above 83 MHz.
+- **`pio_qspi_psram_cs_init()`** (`psram_spi.pio:113`) — a full state-machine
+  init: out/in/set pins across the 4 SIO lines, 2-bit sideset, shift config,
+  pindirs, `pio_gpio_init` on all six pins, and the input-sync bypass across
+  `0xf << pin_sio0`.
+
+It is **dead code in the vendored copy**: `psram_spi.c:58` adds
+`spi_psram_program`/`spi_psram_fudge_program` and line 78 calls the 1-bit
+`pio_spi_psram_cs_init`. Nothing references the QSPI program or its helper.
+
+**Our pin mapping fits the helper's constraints exactly**, which was not a given
+— it requires CS and SCK adjacent (2-bit sideset) and the four SIO lines on
+consecutive GPIOs:
+
+| `pio_qspi_psram_cs_init` requires | ours (`samples/v3/CMakeLists.txt:71-74`) |
+|---|---|
+| `pin_cs`, `pin_cs+1` = CS, SCK | GP20, GP21 |
+| `pin_sio0 .. pin_sio0+3` consecutive | GP2, GP3, GP4, GP5 |
+
+MOSI=GP2 and MISO=GP3 are SIO0/SIO1, so SIO2/SIO3 land on **GP4/GP5** — the
+pins `DISABLE_NUNCHUCK` already freed. The schematic routing pico-286 read and
+the PIO helper's consecutive-GPIO requirement agree on this board.
+
+**So the remaining work is the protocol layer, not the PIO layer:**
+
+1. Enter QPI mode — ESP-PSRAM64H command `0x35`, sent over the existing 1-bit
+   path before switching programs.
+2. QPI-mode read/write wrappers — the current `psram_read`/`psram_write` build
+   1-bit command frames.
+3. QPI Read ID — which is the cheap feasibility probe anyway.
+
+Smaller than "write a QPI driver", and it lowers the risk on this section. It
+does **not** change the sequencing: GP4/GP5 have never been driven here, so the
+probe still comes first.
+
+*(Method note: an earlier pass grepped the C driver for `qpi`, which cannot
+match `qspi_psram`. The conclusion was right by luck. Re-checked for `qspi` —
+still absent from `psram_spi.h`/`psram_spi.c`.)*
 
 Caveats worth carrying, all from `e262c7b`:
 
