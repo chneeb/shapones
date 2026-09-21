@@ -194,7 +194,9 @@ static bool load_nes(const char *fname, int size) {
 
         // Gate on a PSRAM read/write self-test (USB stdio is up by now).
         bool st = psram_self_test();
-        printf("psram_self_test: %s\n", st ? "PASS" : "FAIL");
+        printf("psram_self_test: %s  mode=%s\n", st ? "PASS" : "FAIL",
+               psram_mode_name());
+        if (st) printf("psram: bulk read %u KB/s\n", (unsigned)psram_read_kbps());
         draw_string(0, 40, st ? "PSRAM: PASS" : "PSRAM: FAIL");
         update_lcd();
         if (!st) {

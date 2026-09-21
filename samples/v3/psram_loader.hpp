@@ -8,6 +8,8 @@ bool psram_loader_init();
 // Write a known pattern and read it back; returns true on match.
 // Call after psram_loader_init() to verify PSRAM hardware is working.
 bool psram_self_test();
+const char *psram_mode_name();
+uint32_t psram_read_kbps();
 
 // Call from load_nes() when ROM is too large for SRAM.
 // fil must be open and positioned at byte 0.

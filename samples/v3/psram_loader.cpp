@@ -298,6 +298,22 @@ static bool self_test_at(uint32_t addr, const uint8_t *pattern, uint8_t *buf) {
     return false;
 }
 
+const char *psram_mode_name() { return g_psram_mode; }
+
+// Bulk read throughput, in the chunk size the active mode actually uses.
+// The point is to tell QPI from SPI at a glance: single-bit cannot exceed
+// 6.25 MB/s at 50 MHz SCK, so anything above that is QPI.
+uint32_t psram_read_kbps() {
+    static uint8_t tmp[1024];
+    constexpr uint32_t BYTES = 64u * 1024u;
+    uint32_t t0 = time_us_32();
+    for (uint32_t off = 0; off < BYTES; off += sizeof(tmp))
+        psram_read_n(off, tmp, sizeof(tmp));
+    uint32_t us = time_us_32() - t0;
+    if (us == 0) return 0;
+    return (uint32_t)((uint64_t)BYTES * 1000000u / us / 1024u);
+}
+
 bool psram_self_test() {
     static uint8_t pattern[] = {
         0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
