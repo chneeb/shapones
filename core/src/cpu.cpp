@@ -116,9 +116,11 @@ static SHAPONES_INLINE uint8_t set_nz(uint8_t value) {
 // only that something went wrong; the PCs say what. A repeating pair is a JSR
 // loop, a PC at the NMI vector is interrupts nesting, and a scattered trail is
 // the CPU executing data. Two stores per push, and it prints nothing unless the
-// stack actually runs away. See ROADMAP.md section 6.
+// stack actually runs away. Off by default. See ROADMAP.md section 6.
+// OFF by default: this is scaffolding for one investigation, and core/ is
+// shared by every sample. Build with -DSHAPONES_TRACE_STACK=1 to enable.
 #ifndef SHAPONES_TRACE_STACK
-#define SHAPONES_TRACE_STACK 1
+#define SHAPONES_TRACE_STACK 0
 #endif
 #if SHAPONES_TRACE_STACK
 static constexpr int PUSH_TRACE_LEN = 48;
