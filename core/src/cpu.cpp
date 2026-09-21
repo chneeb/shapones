@@ -22,6 +22,10 @@ volatile cycle_t ppu_cycle_count;
 static uint32_t nmi_count = 0;
 static addr_t nmi_vector = 0;
 static uint32_t rti_count = 0;
+#ifndef SHAPONES_PPU_WRITEONLY_OPENBUS
+#define SHAPONES_PPU_WRITEONLY_OPENBUS 1
+#endif
+
 static uint8_t open_bus = 0;
 
 cycle_t dma_cycle_steal = 0;
@@ -813,7 +817,15 @@ uint8_t bus_read(addr_t addr) {
     if (reg_idx == 2 || reg_idx == 4 || reg_idx == 7) {
       retval = ppu::reg_read(0x2000 + reg_idx);
     } else {
-      retval = open_bus;  // write-only PPU register: return last bus value
+      // Write-only PPU register. CLAUDE.md has long claimed that returning 0
+      // here breaks Bubble Bobble and that open bus is what fixes it; that is
+      // under test - see ROADMAP.md section 6. Build with
+      // -DSHAPONES_PPU_WRITEONLY_OPENBUS=0 to return 0 instead and compare.
+#if SHAPONES_PPU_WRITEONLY_OPENBUS
+      retval = open_bus;  // last byte on the CPU data bus
+#else
+      retval = 0;
+#endif
     }
   } else if (apu::REG_PULSE1_REG0 <= addr && addr <= apu::REG_DMC_REG3 ||
              addr == apu::REG_STATUS) {
