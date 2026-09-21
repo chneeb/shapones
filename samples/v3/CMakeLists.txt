@@ -66,7 +66,15 @@ target_link_libraries(
 
 pico_enable_stdio_usb(picocalc_nes 1)
 
+# Reading a write-only PPU register ($2000/$2001/$2003/$2005/$2006) returns the
+# last byte on the CPU data bus. Set OFF to return 0 instead, which is the
+# comparison ROADMAP.md section 6 asks for:
+#   cmake .. -DPICO_BOARD=pico2 -DSHAPONES_PPU_WRITEONLY_OPENBUS=OFF
+option(SHAPONES_PPU_WRITEONLY_OPENBUS
+       "Return open bus (not 0) when reading write-only PPU registers" ON)
+
 target_compile_definitions(picocalc_nes PRIVATE
+    SHAPONES_PPU_WRITEONLY_OPENBUS=$<BOOL:${SHAPONES_PPU_WRITEONLY_OPENBUS}>
     SHAPONES_ENABLE_LOG=1
     PSRAM_PIN_CS=20
     PSRAM_PIN_SCK=21
