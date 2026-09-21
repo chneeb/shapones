@@ -204,21 +204,56 @@ static void prg_bank_switch_hook(uint32_t cpu_block, uint32_t phys_block) {
 
 // ── Self-test ──
 
+// Report *how* a round trip failed, not just that it did. The shape is
+// diagnostic: a constant nibble means a dead data line, a one-nibble offset
+// means the quad read phase is wrong (see ROADMAP.md §3, which is exactly how
+// that bug was found), and all-zeros or all-ones means no data came back at all.
+static bool self_test_at(uint32_t addr, const uint8_t *pattern, uint8_t *buf) {
+    psram_write_n(addr, pattern, 16);
+    memset(buf, 0, 16);
+    psram_read_n(addr, buf, 16);
+    if (memcmp(pattern, buf, 16) == 0) return true;
+
+    printf("psram_self_test: mismatch at 0x%06lX\n", (unsigned long)addr);
+    printf("  wrote:");
+    for (int i = 0; i < 16; i++) printf(" %02X", pattern[i]);
+    printf("\n  read :");
+    for (int i = 0; i < 16; i++) printf(" %02X", buf[i]);
+    printf("\n");
+
+    // Nibble streams, to spot an offset.
+    auto nib = [](const uint8_t *p, int i) -> int {
+        return (i & 1) ? (p[i >> 1] & 0xF) : (p[i >> 1] >> 4);
+    };
+    for (int k = -2; k <= 2; k++) {
+        if (k == 0) continue;
+        bool match = true;
+        for (int i = 2; i < 28 && match; i++) {
+            int j = i + k;
+            if (j < 0 || j >= 32) continue;
+            if (nib(buf, i) != nib(pattern, j)) match = false;
+        }
+        if (match) { printf("  -> data is offset by %+d nibble(s)\n", k); break; }
+    }
+    // Stuck lines show as a nibble bit that never changes.
+    uint8_t hi_and = 0xF, hi_or = 0, lo_and = 0xF, lo_or = 0;
+    for (int i = 0; i < 16; i++) {
+        hi_and &= buf[i] >> 4;  hi_or |= buf[i] >> 4;
+        lo_and &= buf[i] & 0xF; lo_or |= buf[i] & 0xF;
+    }
+    printf("  nibble bits: hi always-set %X always-clear %X | lo always-set %X always-clear %X\n",
+           hi_and, (uint8_t)(~hi_or & 0xF), lo_and, (uint8_t)(~lo_or & 0xF));
+    return false;
+}
+
 bool psram_self_test() {
     static uint8_t pattern[] = {
         0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
         0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF
     };
     uint8_t buf[16];
-    psram_write_n(0, pattern, 16);
-    memset(buf, 0, 16);
-    psram_read_n(0, buf, 16);
-    if (memcmp(pattern, buf, 16) != 0) return false;
-
-    psram_write_n(4096, pattern, 16);
-    memset(buf, 0, 16);
-    psram_read_n(4096, buf, 16);
-    return memcmp(pattern, buf, 16) == 0;
+    if (!self_test_at(0, pattern, buf)) return false;
+    return self_test_at(4096, pattern, buf);
 }
 
 // ── Load ROM ──

@@ -1,0 +1,3 @@
+load_nes: nes/smb3.nes size=393232 heap=176248
+load_nes: 384KB exceeds SRAM, using PSRAM path
+psram_self_test: FAIL
