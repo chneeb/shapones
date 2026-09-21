@@ -100,8 +100,24 @@ result_t reset() {
 int current_focus_y() { return focus_y; }
 
 uint8_t reg_read(addr_t addr) {
+  // Runs on core 0. ppu::service() on core 1 holds SEMAPHORE_PPU while it
+  // renders and while it does NMI edge detection on reg.status, and every case
+  // below touches state core 1 also uses - so this must hold the same
+  // semaphore for the whole access, not just the queue flush.
+  //
+  // It previously took the semaphore only inside the `if (!write_queue...)`
+  // block and released it before the switch, which left
+  //     reg.status.raw &= 0x7F
+  // as an unsynchronised read-modify-write racing core 1's writes to the same
+  // byte. A lock only one side takes is not a lock. That can lose a vblank flag
+  // core 1 has just set (a missed NMI) or resurrect one core 0 has just cleared
+  // (a second rising edge inside one vblank, so an NMI nested inside its own
+  // handler). Each nested NMI pushes 3 bytes, and Bubble Bobble was seen losing
+  // ~216 bytes of stack - about 72 frames - before returning through an RTI to
+  // a garbage address. See ROADMAP.md section 6.
+  SemaphoreBlock block(SEMAPHORE_PPU);
+
   if (!write_queue.is_empty()) {
-    SemaphoreBlock block(SEMAPHORE_PPU);
     flush_write_queue();
   }
 
