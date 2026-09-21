@@ -41,6 +41,13 @@ rather than a constraint, the lever to reach for first is the **backlight** —
 pico-286 calls it the largest consumer on this board that costs nothing in
 emulation speed and cannot destabilise anything (`652ecc9`).
 
+**Field reports, for calibration only.** The forum's *Overclocking Pico 2*
+thread has users running 300 MHz stable long-term at 37-38 C, and 370/387 MHz
+without trouble. Encouraging for the 360 MHz target below — but **nobody states
+a core voltage**, so it does not bear on the 1.30 V question at all, and Pico 2
+boards there are not necessarily driving a PicoCalc's PSRAM, SD and LCD at the
+same time. Anecdote, not evidence.
+
 **The ceiling at 1.30 V is 360 MHz**, not 300: pico-286's "High" profile is
 360 MHz at `VREG=15` — which is 1.30 V, since `VREG_VOLTAGE_1_30 = 0b01111`.
 Marked worked-but-not-soaked. See step 2 below.
@@ -236,6 +243,12 @@ flash first puts it at 120 MHz (at 360) or 132 MHz (at 396) *while the code
 doing it is executing from flash*. That is what freesci-archive's
 dead-before-serial at 252 MHz was.
 
+**Independent corroboration.** The PicoCalc forum's *Overclocking Pico 2*
+thread (<https://forum.clockworkpi.com/t/overclocking-pico-2/18226>) has users
+reporting that *"so many peripherals (notably flash and USB) stop working at
+relatively low overclock levels for reasons completely unrelated to heat"* —
+which is this, from a source with no connection to pico-286 or freesci.
+
 **Cheap and worth doing first:** print `QMI_M0_TIMING` (or the derived flash
 clock) at boot, so the number is visible on the device rather than inferred from
 a header. This is the same lesson as the build-system trap in section 1 — a knob
@@ -252,10 +265,12 @@ pico-286 `e262c7b` verified against the **ClockworkPi Mainboard V2.0 schematic**
 that the part is an **ESP-PSRAM64H** with all four data lines routed:
 RAM_TX/RAM_RX/RAM_IO2/RAM_IO3 land on chip pins 5/2/3/7 = SIO0–SIO3.
 
-The arithmetic: a 32-bit access is **72 cycles single-bit against 22 in QPI**,
-so ~5.5 -> ~18 MB/s at 99 MHz (against a measured 5.0). That is ~3.3x *on top
-of* anything in section 1, and it matters more here than there because PSRAM
-misses sit on Core 0's critical path inside `cpu::service()`.
+pico-286's projection was ~3.3x, from a 32-bit access costing **72 cycles
+single-bit against 22 in QPI** (~5.5 -> ~18 MB/s at 99 MHz). **That is too
+optimistic** — see the measured numbers below: the same-board, same-width ratio
+is **1.6-2.1x**. Still the largest single PSRAM win available, and it matters
+more here than there because PSRAM misses sit on Core 0's critical path inside
+`cpu::service()`.
 
 **GP4/GP5 are already free on our side.** Our build defines `DISABLE_NUNCHUCK`
 precisely because those pins conflict with PSRAM on this PCB — so the pins the
@@ -304,8 +319,9 @@ the PIO helper's consecutive-GPIO requirement agree on this board.
 3. QPI Read ID — which is the cheap feasibility probe anyway.
 
 Smaller than "write a QPI driver", and it lowers the risk on this section. It
-does **not** change the sequencing: GP4/GP5 have never been driven here, so the
-probe still comes first.
+does **not** change the sequencing: GP4/GP5 have never been driven on *our*
+board, so a hardware check still comes first — though it is now a better test
+than a bare Read ID (see below).
 
 *(Method note: an earlier pass grepped the C driver for `qpi`, which cannot
 match `qspi_psram`. The conclusion was right by luck. Re-checked for `qspi` —
@@ -314,12 +330,71 @@ still absent from `psram_spi.h`/`psram_spi.c`.)*
 Caveats worth carrying, all from `e262c7b`:
 
 - A schematic proves *intent*, not a particular board.
-- Those two lines have never been driven, so a fault would be invisible today.
+- ~~Those two lines have never been driven, so a fault would be invisible~~
+  — superseded: they carry real quad traffic on at least one PicoCalc (below).
+  Still unverified on *our* board.
 - A **QPI Read ID probe settles it** without touching the memory path — do that
   before any driver work.
 - Validate with throughput **and** error count together: that separates "QPI
   never engaged" from "engaged but the extra lines are broken" from "works". A
   correctness-only test silently passes the first.
+
+### It is already done, on our exact hardware (checked 2026-09-21)
+
+**`polpo/rp2040-psram` PR #15, "Initial QSPI(QPI) support"** by **shtirlic**
+(branch `shtirlic:qspi`, open since 2025-08-18, +264/-111 across `psram_spi.c`,
+`psram_spi.h`, `psram_spi.pio`) — <https://github.com/polpo/rp2040-psram/pull/15>
+
+Tested by its author on **ESP-PSRAM64H on a PicoCalc with Pico 2**: our chip,
+our board. Measured **read** throughput from the PR body:
+
+| sysclock | width | SPI | QSPI | ratio |
+|---|---|---|---|---|
+| 150 MHz | 32-bit | 2.26 MB/s | 3.68 MB/s | 1.63x |
+| 150 MHz | 128-bit | 5.20 MB/s | 10.92 MB/s | **2.10x** |
+| 230 MHz | 32-bit | 3.47 MB/s | 5.64 MB/s | 1.63x |
+| 230 MHz | 128-bit | 7.97 MB/s | 16.75 MB/s | **2.10x** |
+
+Two things follow.
+
+**The realistic gain is 1.6-2.1x, not 3.3x.** These are same-board, same-clock,
+same-width A/B numbers, which is much stronger evidence than a cycle count.
+
+**The electrical risk is largely retired.** GP4/GP5 carry real quad traffic on a
+PicoCalc, so the schematic's intent is borne out on hardware. What remains is
+whether *our* board is sound, which is a much smaller question.
+
+Author's own caveats: the code is *"pretty rough"*, you must enter SPI mode to
+switch into QPI and back out again, variable-byte operations were incomplete,
+and it has sat unmerged for over a year. So this is a starting point to be
+reviewed and adapted, not a dependency to take.
+
+**Second implementation for reference:** `siska-tech/koto-psram`, a `no_std`
+Rust driver for "RP2040 boards with PicoCalc-style QPI PSRAM"
+(<https://github.com/siska-tech/koto-psram>). Wrong language for us, but an
+independent reading of the QPI entry/exit sequence.
+
+**Pin mapping independently confirmed** by the forum thread *PSRAM on the
+PicoCalc* (<https://forum.clockworkpi.com/t/psram-on-the-picocalc/17176>):
+CS=GP20, SCK=GP21, MOSI/SIO0=GP2, MISO/SIO1=GP3, board *"connected for QSPI
+setup"* per schematic, and the consecutive-GPIO requirement restated. Third
+independent source agreeing with the table above.
+
+### Transfer width is a separate lever, and may be cheaper than QPI
+
+The table shows width mattering more than QPI does: at 150 MHz, SPI reads go
+**1.34 -> 5.20 MB/s** from 16-bit to 128-bit, a 3.9x swing with no protocol
+change at all. The two compound (16-bit SPI 1.34 -> 128-bit QSPI 10.92, ~8x).
+
+Where we sit: `psram_loader.cpp:62` chunks reads at **31 bytes**, because
+`psram_read()` writes the bit count into a **`uint8_t`** field
+(`psram_spi.h:578`, `read_command[1] = count * 8`, so count <= 31). That is a
+**driver-header limitation, not a protocol one** — the same limitation the PR's
+wider variants address.
+
+So before concluding QPI is the only path to more bandwidth, establish what our
+8 KB bank load actually achieves per byte today. A PRG miss is a bulk
+sequential read, which is the best case for wide transfers.
 
 ### Why the caches stay valuable afterwards
 
@@ -329,6 +404,12 @@ free GPIO, so a device on ordinary GPIOs is unreachable by QMI regardless of
 software. There is no XIP-from-PSRAM path to fall back on, which makes a
 software cache the only option rather than a workaround — our PRG victim cache
 and full CHR pre-cache are the right shape.
+
+Independently confirmed on the forum (*Does PicoCalc have PSRAM?*,
+<https://forum.clockworkpi.com/t/does-picocalc-have-psram/18001>): the PSRAM is
+on ordinary GPIOs rather than the QMI bus, so it *"can only be used by copying
+data into and out of RAM"*. PicoMite supports PSRAM only on QMI pins 0/8/19/47,
+none of which is our GP20 — which is why that firmware cannot use it at all.
 
 They also note an SRAM cache **compounds** with QPI rather than competing:
 per-transaction overhead grows as a fraction of a faster transfer, so anything
@@ -506,8 +587,12 @@ The flash check goes first because it is the only item that questions the
 configuration we ship **today**, and it is a print statement. PSRAM step 1 next:
 one line, device-verified on this exact PCB at this exact clock and voltage.
 
-Then the small independent items. The QPI *probe* is cheap and comes before
-either of the big builds, because a negative result removes section 3 entirely
-and changes what 360 MHz is worth. 360 MHz is gated on the flash answer.
+Then the small independent items. The QPI check comes before either of the big
+builds, because a negative result removes section 3 entirely and changes what
+360 MHz is worth. It is now better than a bare Read ID probe: **build PR #15's
+own benchmark as a standalone firmware** and run it on our board. That answers
+in one flash whether QPI engages, whether our GP4/GP5 are sound, and what SPI
+and QSPI actually achieve *here* at *our* clock — with no change to shapones at
+all. 360 MHz is gated on the flash answer.
 
 Only the QPI driver and the control-block DMA are real projects.
