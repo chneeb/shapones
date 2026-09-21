@@ -548,6 +548,45 @@ for on the SPI side, and exactly the variant the quad program does not have. Fix
 a rate-appropriate read phase, and the threshold on this board is somewhere at or
 below 75 MHz, not the 83 MHz the comment cites.
 
+### The fix, confirmed on hardware (2026-09-21)
+
+Four PIO read variants were tested (`picocalc-bench/qv.pio`), crossing
+turnaround length against sample edge:
+
+**`short/fall` + 3 dummy bytes passes at 50 MHz.** Removing exactly one
+turnaround clock from the quad read section — entering the read loop at
+`readloop` rather than `readloop_mid`, with `y` reduced by one to keep the
+sample count right — reads correctly over 4 KB. That is the realign
+experiment's prediction confirmed in the PIO rather than worked around on the
+CPU.
+
+**This is enough, and 75 MHz is not needed.** QPI at 50 MHz measured
+**21978 KB/s** read-only, against a single-bit ceiling of 6.25 MB/s at that
+clock. So a patched quad program at our *existing* 50 MHz gives better than
+**3.4x** on PSRAM reads — more than the whole clock-raising ladder in section 1,
+with no clock change, no voltage change and no dependence on the flash-divisor
+question in section 2. The 75 MHz OR-blending becomes optional optimisation
+rather than a blocker.
+
+**The other 14 rows of that run are not evidence.** The harness left the part in
+QPI mode after the first combination, so every later one spoke SPI to a chip
+listening in QPI. Two causes, both in teardown: `psram_spi_uninit()` sends its
+`0xF5` exit *after* unclaiming both DMA channels, and the test additionally
+disabled the state machine and removed the program before calling it, so the
+exit went nowhere. The library's exit command is also mis-sized — `{8, 0, 0xF5}`
+asks for 8 nibbles in QPI framing while supplying 2; correct is `{2, 0, 0xF5}`.
+
+The tell was an internal contradiction: stock at 75 MHz returned wrong *data* in
+two earlier firmwares but TIMEOUT here. When a harness disagrees with a simpler
+earlier measurement, the harness is wrong. The surviving PASS is still sound —
+config 0 wrote its pattern while the chip was still in SPI at boot, that data
+survived, and `short/fall` read it back correctly.
+
+`picocalc-bench/variants2.c` corrects it: no library quad path at all, a
+correctly sized exit sent through the *running* state machine before any
+teardown, and a Read ID check between every combination that reports
+`chip-dirty` rather than letting a contaminated row look like a result.
+
 ### Caveat on every throughput figure above (2026-09-21)
 
 **The benchmark timed the verify loop along with the read.** `main.c` put the
