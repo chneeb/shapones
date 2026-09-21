@@ -334,7 +334,10 @@ to apply should be visible on the device. That is a nicety, not a blocker.
 > spent guessing at this on hardware that had to stay bootable; that is the
 > mistake not to repeat.
 >
-> Test firmware: `~/Source/rp2040-psram-qspi-test/picocalc-bench/`.
+> Test firmware: **`samples/v3/tools/psram-test/`** on the `psram-qpi` branch —
+> four standalone tools (bench, probe, realign, variants) with a README
+> recording what each one answered. They live on the branch because they need
+> the QPI library, which only exists there.
 
 ## 3a. Why it is worth finishing
 
