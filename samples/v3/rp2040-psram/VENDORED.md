@@ -21,43 +21,46 @@ reference in `CLAUDE.md` and `ROADMAP.md` still resolve.
 
 ## Local changes
 
-1. **PR #15, "Initial QSPI(QPI) support"** (`shtirlic`, upstream commit
-   `bdf754f`) applied as-is to `psram_spi.c`, `psram_spi.h`, `psram_spi.pio`.
-   Adds a `quad` parameter to `psram_spi_init_clkdiv()`, a `qspi_psram` PIO
+**None on `main`.** This directory is byte-for-byte upstream `419375d`, so the
+vendoring can be verified by diffing against upstream.
+
+The copy exists anyway because the QPI work needs it, and that work lives on
+the **`psram-qpi`** branch: <https://github.com/chneeb/shapones/tree/psram-qpi>
+
+That branch carries, on top of this:
+
+1. **PR #15, "Initial QSPI(QPI) support"** (`shtirlic`, upstream `bdf754f`) -
+   a `quad` parameter on `psram_spi_init_clkdiv()`, the `qspi_psram` PIO
    program, quad command variants, and `psram_spi_uninit()`.
+2. **A PicoCalc quad read-phase fix.** The PR's read loop carries one
+   turnaround clock too many at 50 MHz SCK, so reads come back shifted left by
+   exactly one nibble. Removing the `jmp readloop_mid` makes the loop enter one
+   clock earlier; since that samples `y+1` times, every quad read length passes
+   `y-1`. Device-verified: 4 KB read back clean.
+3. Loader integration, a QPI marker check at init, and an SPI fallback.
 
-2. **PicoCalc quad read-phase fix** (`psram_spi.pio`, `psram_spi.h`). The PR's
-   quad read loop carries one turnaround clock too many at 50 MHz SCK, so reads
-   come back shifted left by exactly one nibble. Removing the
-   `jmp readloop_mid` after `set pindirs 0` makes the loop enter at `readloop`
-   instead, one clock earlier. Because that entry samples `y+1` times rather
-   than `y`, every quad read length now passes `y-1`:
+Keeping the vendored directory on `main` rather than restoring the submodule
+means that branch merges cleanly when QPI is finished, instead of colliding a
+directory against a gitlink.
 
-   | | was | now |
-   |---|---|---|
-   | `read8_quad_command[1]` | 2 | 1 |
-   | `read16_quad_command[1]` | 4 | 3 |
-   | `read32_quad_command[1]` | 8 | 7 |
-   | `psram_read()` quad | `count * 2` | `count * 2 - 1` |
+**Status: QPI is not working end-to-end.** Standalone firmware reaches
+~21.9 MB/s with all four data lines sound, but the same sequence inside
+`psram_loader` does not come up. `ROADMAP.md` section 3 has the evidence and
+what is left to try.
 
-   Verified on hardware: 4 KB read back with zero errors at 50 MHz, against a
-   pattern written over SPI immediately beforehand. See `ROADMAP.md` section 3
-   for how it was diagnosed and for the variant matrix this came from.
+## Known upstream bugs
 
-**Known upstream issues left alone**, because nothing here depends on them:
+These bite anyone using this library, on `main` or the branch:
 
-- `psram_spi_uninit()` **never disables the state machine** — there is no
+- `psram_spi_uninit()` **never disables the state machine** - there is no
   `pio_sm_set_enabled` call anywhere in `psram_spi.c`. It removes the program
   from instruction memory while the SM is still executing it, so the SM runs
-  whatever lands at those addresses and toggles CS/SCK/SIO at the part. This is
-  not theoretical: it put the chip back out of QPI mode and made every read
-  return zeros. `psram_loader.cpp` works around it by disabling the SM itself
-  before calling uninit. The library's own `psram_qpi_init()` has the same
-  pattern and the same exposure.
+  whatever lands at those addresses and toggles CS/SCK/SIO at the part.
+  Observed effect: the chip drops out of QPI and every read returns zeros.
 - `psram_spi_uninit()` sends its `0xF5` exit-QPI *after* unclaiming both DMA
   channels, so the command may not go out at all.
 - That exit command is mis-sized: `{8, 0, 0xF5}` asks for 8 nibbles in QPI
-  framing while supplying 2. Correct would be `{2, 0, 0xF5}`.
-
-Both matter to anyone who tears a QPI instance down and expects the part to
-return to SPI mode. `psram_loader.cpp` initialises once and never exits QPI.
+  framing while supplying 2. Correct is `{2, 0, 0xF5}`.
+- The part **keeps its mode across a warm reset**. A reflash resets the RP2350
+  but not the PSRAM, so a run that ends in QPI leaves the next boot sending
+  SPI-framed commands to a chip that is not listening.

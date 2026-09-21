@@ -1,8 +1,0 @@
-load_nes: nes/smb3.nes size=393232 heap=175240
-load_nes: 384KB exceeds SRAM, using PSRAM path
-psram: read timeout at 0x000000
-psram_self_test: mismatch at 0x000000 (mode: SPI (QPI unavailable))
-  wrote: DE AD BE EF CA FE BA BE 01 23 45 67 89 AB CD EF
-  read : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-  nibble bits: hi always-set 0 always-clear F | lo always-set 0 always-clear F
-psram_self_test: FAIL  mode=SPI (QPI unavailable)

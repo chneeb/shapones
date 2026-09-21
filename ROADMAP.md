@@ -312,7 +312,31 @@ to apply should be visible on the device. That is a nicety, not a blocker.
 
 ---
 
-## 3. QPI — the largest single PSRAM win available, and the pins are already free
+## 3. QPI — largest win available; integration unfinished, on branch `psram-qpi`
+
+> **Where the code is.** The integration attempt lives on the **`psram-qpi`**
+> branch (<https://github.com/chneeb/shapones/tree/psram-qpi>), not on `main`.
+> It carries PR #15, the read-phase fix, loader wiring, an init-time marker
+> check and an SPI fallback. `main` keeps only the vendored library at upstream
+> content, so the branch merges cleanly when this is finished.
+>
+> **Status: works standalone, does not work in the loader.** Standalone
+> firmware reaches ~21.9 MB/s with all four data lines proven sound and the
+> read phase corrected. The same sequence inside `psram_loader_init()` fails its
+> marker read and falls back to SPI. What differs has not been identified — the
+> loader runs on `pio1` with the LCD active on `pio0`, where every standalone
+> test ran on `pio0` with nothing else running.
+>
+> **Next step is not another loader patch.** Take the exact `psram_enter_qpi()`
+> sequence into the standalone harness on `pio1` and find where it diverges from
+> the version that passed, with deadlines everywhere — so a wrong guess costs a
+> printed line rather than an unbootable emulator. Several device flashes were
+> spent guessing at this on hardware that had to stay bootable; that is the
+> mistake not to repeat.
+>
+> Test firmware: `~/Source/rp2040-psram-qspi-test/picocalc-bench/`.
+
+## 3a. Why it is worth finishing
 
 pico-286 `e262c7b` verified against the **ClockworkPi Mainboard V2.0 schematic**
 that the part is an **ESP-PSRAM64H** with all four data lines routed:
