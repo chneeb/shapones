@@ -72,51 +72,28 @@ static bool psram_xfer(psram_spi_inst_t *s, const uint8_t *cmd, size_t cmd_len,
 static inline int rd_chunk() { return g_spi.quad ? 127 : 31; }
 static inline int wr_chunk() { return g_spi.quad ? 123 : 27; }
 
-// Both of these go through psram_xfer(), so a wrong mode or an unresponsive
-// part produces wrong data rather than a frozen board. That matters most at
-// boot, where a hang leaves nothing on screen to diagnose from.
+// These use the library's own psram_read()/psram_write(). An earlier attempt
+// replaced them with hand-built command buffers going through psram_xfer(), to
+// make the boot unhangable - and that broke single-bit SPI reads, which had
+// worked for months. The bounded path is kept for probing an uncertain mode
+// (see psram_enter_qpi), not for the data path.
 static void psram_read_n(uint32_t addr, uint8_t *dst, size_t count) {
     while (count > 0) {
         size_t n = (count > (size_t)rd_chunk()) ? (size_t)rd_chunk() : count;
-        uint8_t cmd[9];
-        size_t cmd_len;
-        if (g_spi.quad) {   // 0xEB + address + 3 dummy bytes; lengths in nibbles
-            cmd[0] = 14; cmd[1] = (uint8_t)(n * 2 - 1); cmd[2] = 0xEBu;
-            cmd[6] = cmd[7] = cmd[8] = 0;
-            cmd_len = 9;
-        } else {            // 0x0B + address + 1 dummy byte; lengths in bits
-            cmd[0] = 40; cmd[1] = (uint8_t)(n * 8); cmd[2] = 0x0Bu;
-            cmd[6] = 0;
-            cmd_len = 7;
-        }
-        cmd[3] = (uint8_t)(addr >> 16);
-        cmd[4] = (uint8_t)(addr >> 8);
-        cmd[5] = (uint8_t)addr;
-        if (!psram_xfer(&g_spi, cmd, cmd_len, dst, n)) {
-            printf("psram: read timeout at 0x%06lX\n", (unsigned long)addr);
-            memset(dst, 0, n);
-        }
-        addr += n; dst += n; count -= n;
+        psram_read(&g_spi, addr, dst, n);
+        addr  += n;
+        dst   += n;
+        count -= n;
     }
 }
 
 static void psram_write_n(uint32_t addr, const uint8_t *src, size_t count) {
     while (count > 0) {
         size_t n = (count > (size_t)wr_chunk()) ? (size_t)wr_chunk() : count;
-        // Header and payload in one buffer, so there is no DMA restart gap in
-        // the middle of a transaction - the library issues these as two
-        // transfers, which leaves the state machine to stall between them.
-        uint8_t buf[6 + 123];
-        buf[0] = g_spi.quad ? (uint8_t)((4 + n) * 2) : (uint8_t)((4 + n) * 8);
-        buf[1] = 0;
-        buf[2] = g_spi.quad ? 0x38u : 0x02u;
-        buf[3] = (uint8_t)(addr >> 16);
-        buf[4] = (uint8_t)(addr >> 8);
-        buf[5] = (uint8_t)addr;
-        memcpy(buf + 6, src, n);
-        if (!psram_xfer(&g_spi, buf, 6 + n, nullptr, 0))
-            printf("psram: write timeout at 0x%06lX\n", (unsigned long)addr);
-        addr += n; src += n; count -= n;
+        psram_write(&g_spi, addr, src, n);
+        addr  += n;
+        src   += n;
+        count -= n;
     }
 }
 
