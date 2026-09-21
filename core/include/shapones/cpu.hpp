@@ -5,6 +5,10 @@
 
 namespace shapones::cpu {
 
+// Reading a write-only PPU register returns the last byte on the CPU data
+// bus when true, or 0 when false. See ROADMAP.md section 6.
+extern volatile bool writeonly_open_bus;
+
 static constexpr int CLOCK_FREQ_NTSC = 1789773;
 static constexpr int CLOCK_FREQ_PAL = 1662607;
 static constexpr int CLOCK_FREQ_DENDY = 1773448;

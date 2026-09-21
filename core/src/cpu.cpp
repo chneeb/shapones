@@ -26,6 +26,10 @@ static uint32_t rti_count = 0;
 #define SHAPONES_PPU_WRITEONLY_OPENBUS 1
 #endif
 
+// Runtime-toggleable so the comparison does not need two firmware builds.
+// The build flag only chooses the initial value.
+volatile bool writeonly_open_bus = SHAPONES_PPU_WRITEONLY_OPENBUS;
+
 static uint8_t open_bus = 0;
 
 cycle_t dma_cycle_steal = 0;
@@ -821,11 +825,7 @@ uint8_t bus_read(addr_t addr) {
       // here breaks Bubble Bobble and that open bus is what fixes it; that is
       // under test - see ROADMAP.md section 6. Build with
       // -DSHAPONES_PPU_WRITEONLY_OPENBUS=0 to return 0 instead and compare.
-#if SHAPONES_PPU_WRITEONLY_OPENBUS
-      retval = open_bus;  // last byte on the CPU data bus
-#else
-      retval = 0;
-#endif
+      retval = writeonly_open_bus ? open_bus : 0;
     }
   } else if (apu::REG_PULSE1_REG0 <= addr && addr <= apu::REG_DMC_REG3 ||
              addr == apu::REG_STATUS) {

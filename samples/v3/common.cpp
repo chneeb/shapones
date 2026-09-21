@@ -144,6 +144,15 @@ void kbd_interrupt() {
             case ']'://A
                 set_kdb_key(0, key_stat);
                 break;
+            case 'o'://toggle write-only PPU register reads: open bus <-> 0
+                // Only meaningful before a ROM starts, so the boot menu shows
+                // the state and this is where you flip it. Toggling mid-game
+                // changes behaviour from that point but not what already ran.
+                if (key_stat == 1) {
+                    shapones::cpu::writeonly_open_bus =
+                        !shapones::cpu::writeonly_open_bus;
+                }
+                break;
             case 'i'://toggle interlaced LCD update (on key press only)
                 if (key_stat == 1) interlace_enabled = !interlace_enabled;
                 break;
