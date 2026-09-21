@@ -148,9 +148,10 @@ bool psram_loader_init() {
         free(chr_full_cache);
         chr_full_cache = nullptr;
     }
-    // Operating point: ~100 MHz state-machine clock (SCK ~50 MHz) with the
-    // PLAIN (non-fudge) PIO program, so clkdiv is SYS_CLK_FREQ / 100 MHz:
-    // 2.5 @ 250 MHz, 3.0 @ 300 MHz.
+    // Operating point: 150 MHz state-machine clock (SCK 75 MHz) with the PLAIN
+    // (non-fudge) PIO program, so clkdiv is SYS_CLK_FREQ / 150 MHz = 2.0 at our
+    // 300 MHz. Still below the 83 MHz threshold above which the fudge program
+    // is required.
     //
     // What governs reliability is the PIO program choice, COUPLED to the clock
     // — not, as this comment used to claim, an oscillating sampling-phase
@@ -160,18 +161,25 @@ bool psram_loader_init() {
     // monotonically at 49/66/79/99 MHz. Getting the pairing wrong is a DEAD
     // BUS: past 83 MHz SPI the `false` below must become `true`.
     //
-    // We sit on the 49 MHz row; that sweep soak-tested 99 MHz + fudge at
-    // ~5.0 MB/s. See ROADMAP.md §1 — those numbers are inherited from another
-    // board and unmeasured here, so do not change the divisor without a full
-    // bulk read/verify; a 16-byte round-trip is too weak to catch marginal
-    // timing.
+    // 75 MHz is measured on THIS board, not inherited: 256 KB verified in 8 KB
+    // blocks spread over the full 8 MB gave 5546 KB/s against 4097 KB/s at
+    // 50 MHz, both with zero errors (+35%). ROADMAP.md §1 step 1.
+    //
+    // Do not change the divisor without a full bulk read/verify; a 16-byte
+    // round-trip is too weak to catch marginal timing. And keep it an INTEGER:
+    // the PIO divider is 16.8 fixed point and dithers the cycle length on a
+    // fractional value, which is fatal for a sampling-phase-sensitive bus. The
+    // static_assert below enforces that, which is why it now rejects clocks
+    // like 250 MHz that used to be allowed at the old 100 MHz target.
     //
     // The divisor holds its sampling phase across a change of SYS_CLK_FREQ only
     // because psram_spi.pio bypasses the PIO input synchronizer on MISO (the
     // one clk_sys-dependent term); what is left is fixed-ns pad/PCB/t_CO delay.
     // Lose that bypass and the phase moves with the system clock.
-    static_assert(SYS_CLK_FREQ % (100 * MHZ) == 0, "pick a clkdiv for this clock");
-    g_spi = psram_spi_init_clkdiv(pio1, -1, (float)SYS_CLK_FREQ / (100 * MHZ), false);
+    static_assert(SYS_CLK_FREQ % (150 * MHZ) == 0,
+                  "SYS_CLK_FREQ must divide evenly by 150 MHz: the PSRAM PIO "
+                  "divider has to stay an integer");
+    g_spi = psram_spi_init_clkdiv(pio1, -1, (float)SYS_CLK_FREQ / (150 * MHZ), false);
     for (int i = 0; i < PRG_SLOTS; i++) { prg_cache_bank[i] = -1; prg_slot_stamp[i] = 0; }
     for (int i = 0; i < shapones::memory::PRGROM_REMAP_TABLE_SIZE; i++) prg_window_slot[i] = -1;
     prg_lru_clock = 0;

@@ -863,25 +863,29 @@ Two lessons:
 
 ## Suggested order
 
-**flash-divisor decision (2) -> PSRAM step 1 (1) -> PAL (4) -> open-bus
-experiment (6) -> noise constant (5) -> QPI benchmark (3) -> 360 MHz at 1.30 V
-(1 step 2) -> QPI driver (3) -> control-block DMA (7)**
+**PSRAM step 1 (1) — DONE → PAL (4) → open-bus experiment (6) → noise constant
+(5) → flash-divisor decision (2) → finish QPI on `psram-qpi` (3) → 360 MHz at
+1.30 V (1 step 2) → control-block DMA (7)**
 
-The flash divisor goes first because it is the only item that concerns the
-configuration we ship **today** — and it is now a decision rather than an
-investigation, since the 150 MHz figure is confirmed in our own build output.
-PSRAM step 1 next: one line, device-verified on this exact PCB at this exact
-clock and voltage.
+**PSRAM step 1 is applied** (2026-09-21): clkdiv 2.0, 75 MHz SCK, measured
++35% on this board with zero errors. It was the one item that was finished and
+unshipped.
 
-**Neither of the first two needs the device.** The first device test is the QPI
-benchmark.
+Then the three small independent items, in that order because none of them
+touches the PSRAM path — which has cost several device flashes — and all three
+are core or sample-local. PAL is the largest user-visible fix left. The open-bus
+experiment is ten minutes and settles a `CLAUDE.md` note that probably names the
+wrong cause. The noise constant is a build-time A/B.
 
-Then the small independent items. The QPI check comes before either of the big
-builds, because a negative result removes section 3 entirely and changes what
-360 MHz is worth. It is now better than a bare Read ID probe: **build PR #15's
-own benchmark as a standalone firmware** and run it on our board. That answers
-in one flash whether QPI engages, whether our GP4/GP5 are sound, and what SPI
-and QSPI actually achieve *here* at *our* clock — with no change to shapones at
-all. 360 MHz is gated on the flash answer.
+The flash-divisor decision sits after them because it was deferred rather than
+resolved: the 150 MHz figure is confirmed statically, so what remains is a
+judgement about margin versus XIP fill bandwidth, and it gates 360 MHz.
 
-Only the QPI driver and the control-block DMA are real projects.
+**QPI is not in this sequence as a device test any more.** It lives on the
+`psram-qpi` branch, works standalone and not in the loader, and the next step
+there is to reproduce `psram_enter_qpi()` in the standalone harness on `pio1` —
+not another patch to a loader that has to stay bootable. Section 3 has the
+detail.
+
+Only QPI's completion and the control-block DMA are real projects; everything
+before them is a day or less.
