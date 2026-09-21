@@ -227,15 +227,35 @@ is real, not a rounded-down 80 as happened in the InfoNES port.
 
 ---
 
-## 2. Flash divisor — a live question about what we ship today
+## 2. Flash runs at 150 MHz today — confirmed in the build, not a device test
 
-**Not just an overclock prerequisite.** `pico2.h:75` sets
-**`PICO_FLASH_SPI_CLKDIV 2`** and we override it nowhere, so if that is what is
-in effect at our 300 MHz, flash is running at **150 MHz** — above the ~133 MHz
+**Settled statically on 2026-09-21. No measurement needed.** An earlier draft
+called for printing `QMI_M0_TIMING` at boot; that was unnecessary, because the
+value is decided at build time and is visible in our own compiled artifacts.
+
+The chain:
+
+1. `pico2.h:75` sets **`PICO_FLASH_SPI_CLKDIV 2`**, and neither our CMakeLists
+   nor our sources override it.
+2. Our built boot stage 2 bakes that in. In
+   `build/pico-sdk/src/rp2350/boot_stage2/bs2_default.dis`, `_qmi_config` loads
+   the literal **`0x40000202`** and stores it to `[r3, #12]`, where `r3` is the
+   QMI base (`0x400D0000`) and offset 12 is **`M0_TIMING`**. Decoding it:
+   `CLKDIV` (bits 5:0) = **2**, `RXDELAY` (bits 10:8) = 2, `COOLDOWN` = 1.
+3. **Nothing rewrites it afterwards.** No runtime write to `M0_TIMING` exists
+   anywhere in the SDK sources, and our own code never references QMI at all.
+4. `set_sys_clock_khz()` changes `clk_sys` and leaves the divider alone.
+
+So flash = `clk_sys / 2` = **150 MHz at our 300 MHz**, against the ~133 MHz
 these parts are typically rated for.
 
-The board plainly works, so this is a question, not a known defect. But "works
-at room temperature on one board" is exactly how marginal XIP presents, and the
+Worth seeing how we got here: at the SDK's default 150 MHz system clock,
+divisor 2 gives a perfectly sane **75 MHz** flash. Our overclock to 300 MHz
+doubled the flash clock as a side effect, because the divider is not part of
+what `set_sys_clock_khz` touches. Nobody chose 150 MHz flash.
+
+The board plainly works, so this is not a known defect. But "works at room
+temperature on one board" is exactly how marginal XIP presents, and the
 divisor does **not** adjust when the clock changes: pico-286's README states a
 300 MHz build gets divisor 3 (100 MHz flash, *"only safe up to 300 MHz"*) and a
 396 build gets divisor 4, and that raising the clock at runtime without setting
@@ -249,13 +269,22 @@ reporting that *"so many peripherals (notably flash and USB) stop working at
 relatively low overclock levels for reasons completely unrelated to heat"* —
 which is this, from a source with no connection to pico-286 or freesci.
 
-**Cheap and worth doing first:** print `QMI_M0_TIMING` (or the derived flash
-clock) at boot, so the number is visible on the device rather than inferred from
-a header. This is the same lesson as the build-system trap in section 1 — a knob
-that silently fails to apply should be observable.
+**This is now a decision, not an investigation.** The options:
 
-Then, if it is 150 MHz: decide whether to set the divisor explicitly. It is
-blocking for section 1 step 2, since 360 MHz at divisor 2 would be 180 MHz.
+- **Leave it.** It demonstrably works on this board at this clock. Accepts an
+  out-of-spec margin that varies with temperature and with the individual part.
+- **Set `PICO_FLASH_SPI_CLKDIV=4`** in our CMakeLists -> **75 MHz** flash at
+  300 MHz, comfortably in spec and the same figure the stock 150 MHz build
+  runs. Costs XIP fill bandwidth, so it should be measured against our fps
+  rather than assumed free — we execute from XIP with the cache in front of it.
+
+It is **blocking for section 1 step 2**: 360 MHz at divisor 2 would be 180 MHz
+flash. With divisor 4 it would be 90 MHz, which is fine — so if we take the
+divisor change, it clears the flash prerequisite for 360 MHz in the same stroke.
+
+**Still worth printing the achieved rate at boot**, not to answer this question
+but for the reason in section 1's build-system trap: a knob that silently fails
+to apply should be visible on the device. That is a nicety, not a blocker.
 
 ---
 
@@ -579,13 +608,18 @@ Two lessons:
 
 ## Suggested order
 
-**flash-divisor check (2) -> PSRAM step 1 (1) -> PAL (4) -> open-bus experiment
-(6) -> noise constant (5) -> QPI probe (3) -> 360 MHz at 1.30 V (1 step 2) ->
-QPI driver (3) -> control-block DMA (7)**
+**flash-divisor decision (2) -> PSRAM step 1 (1) -> PAL (4) -> open-bus
+experiment (6) -> noise constant (5) -> QPI benchmark (3) -> 360 MHz at 1.30 V
+(1 step 2) -> QPI driver (3) -> control-block DMA (7)**
 
-The flash check goes first because it is the only item that questions the
-configuration we ship **today**, and it is a print statement. PSRAM step 1 next:
-one line, device-verified on this exact PCB at this exact clock and voltage.
+The flash divisor goes first because it is the only item that concerns the
+configuration we ship **today** — and it is now a decision rather than an
+investigation, since the 150 MHz figure is confirmed in our own build output.
+PSRAM step 1 next: one line, device-verified on this exact PCB at this exact
+clock and voltage.
+
+**Neither of the first two needs the device.** The first device test is the QPI
+benchmark.
 
 Then the small independent items. The QPI check comes before either of the big
 builds, because a negative result removes section 3 entirely and changes what
