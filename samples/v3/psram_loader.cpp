@@ -56,18 +56,21 @@ static uint32_t g_chr_phys_size;   // 0 for CHR-RAM games
 bool psram_active = false;
 
 static psram_spi_inst_t g_spi;
+static const char *g_psram_mode = "?";
 
 // ── small-chunk helpers ──
 // The library packs the transfer length into a uint8_t. In SPI framing that
 // field counts BITS (so ≤ 31 bytes read, ≤ 27 write); in QPI it counts NIBBLES,
 // which is why the same field reaches four times further. Part of QPI's
 // throughput win is this larger chunk, not just the four data lines.
-static constexpr int RD_CHUNK = 127;   // SPI would be 31
-static constexpr int WR_CHUNK = 123;   // SPI would be 27; (4+count)*2 ≤ 255
+// QPI reaches four times further per call, so the chunk follows the mode we
+// actually ended up in - see psram_enter_qpi(), which falls back to SPI.
+static inline int rd_chunk() { return g_spi.quad ? 127 : 31; }
+static inline int wr_chunk() { return g_spi.quad ? 123 : 27; }
 
 static void psram_read_n(uint32_t addr, uint8_t *dst, size_t count) {
     while (count > 0) {
-        size_t n = (count > RD_CHUNK) ? RD_CHUNK : count;
+        size_t n = (count > (size_t)rd_chunk()) ? (size_t)rd_chunk() : count;
         psram_read(&g_spi, addr, dst, n);
         addr  += n;
         dst   += n;
@@ -77,7 +80,7 @@ static void psram_read_n(uint32_t addr, uint8_t *dst, size_t count) {
 
 static void psram_write_n(uint32_t addr, const uint8_t *src, size_t count) {
     while (count > 0) {
-        size_t n = (count > WR_CHUNK) ? WR_CHUNK : count;
+        size_t n = (count > (size_t)wr_chunk()) ? (size_t)wr_chunk() : count;
         psram_write(&g_spi, addr, src, n);
         addr  += n;
         src   += n;
@@ -178,14 +181,27 @@ static psram_spi_inst_t psram_enter_qpi(PIO pio, float clkdiv) {
     psram_read(&q, QPI_MARKER_ADDR, back, sizeof(back));
     if (memcmp(QPI_MARKER, back, sizeof(back)) == 0) {
         printf("psram: QPI read path OK\n");
-    } else {
-        printf("psram: QPI read of SPI-written marker FAILED\n  want:");
-        for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", QPI_MARKER[i]);
-        printf("\n  got :");
-        for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", back[i]);
-        printf("\n");
+        g_psram_mode = "QPI";
+        return q;
     }
-    return q;
+
+    printf("psram: QPI marker read FAILED, falling back to SPI\n  want:");
+    for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", QPI_MARKER[i]);
+    printf("\n  got :");
+    for (unsigned i = 0; i < sizeof(back); i++) printf(" %02X", back[i]);
+    printf("\n");
+
+    // Leave QPI properly: the exit must go out through the RUNNING state
+    // machine, and in QPI framing its length counts nibbles, so one payload
+    // byte is 2 - the library's own {8, 0, 0xF5} asks for four times too many.
+    uint8_t exit_qpi[] = { 2, 0, 0xF5u };
+    pio_spi_write_read_dma_blocking(&q, exit_qpi, 3, 0, 0);
+    pio_sm_set_enabled(pio, q.sm, false);
+    psram_spi_uninit(q);
+
+    // Single-bit SPI still works and is what shipped before; slower beats dead.
+    g_psram_mode = "SPI (QPI unavailable)";
+    return psram_spi_init_clkdiv(pio, -1, clkdiv, false, false);
 }
 
 bool psram_loader_init() {
@@ -249,7 +265,8 @@ static bool self_test_at(uint32_t addr, const uint8_t *pattern, uint8_t *buf) {
     psram_read_n(addr, buf, 16);
     if (memcmp(pattern, buf, 16) == 0) return true;
 
-    printf("psram_self_test: mismatch at 0x%06lX\n", (unsigned long)addr);
+    printf("psram_self_test: mismatch at 0x%06lX (mode: %s)\n",
+           (unsigned long)addr, g_psram_mode);
     printf("  wrote:");
     for (int i = 0; i < 16; i++) printf(" %02X", pattern[i]);
     printf("\n  read :");
@@ -310,9 +327,12 @@ bool psram_load_nes(FIL *fil, uint32_t ines_size) {
     // Stream PRG + CHR from SD to PSRAM
     uint32_t psram_addr = 0;
     uint32_t remaining  = prg_phys_size + chr_phys_size;
-    uint8_t chunk[WR_CHUNK];
+    // Sized for the largest chunk either mode uses; psram_write_n() splits to
+    // whatever the active mode actually allows.
+    static constexpr UINT SD_CHUNK = 123;
+    uint8_t chunk[SD_CHUNK];
     while (remaining > 0) {
-        UINT to_read = (remaining > WR_CHUNK) ? WR_CHUNK : (UINT)remaining;
+        UINT to_read = (remaining > SD_CHUNK) ? SD_CHUNK : (UINT)remaining;
         if (f_read(fil, chunk, to_read, &br) != FR_OK || br != to_read) return false;
         psram_write_n(psram_addr, chunk, br);
         psram_addr += br;
