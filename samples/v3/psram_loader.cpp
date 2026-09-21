@@ -57,10 +57,13 @@ bool psram_active = false;
 
 static psram_spi_inst_t g_spi;
 
-// ── small-chunk helpers (uint8_t bit-count field limits: ≤31 read, ≤27 write) ──
-
-static constexpr int RD_CHUNK = 31;
-static constexpr int WR_CHUNK = 27;
+// ── small-chunk helpers ──
+// The library packs the transfer length into a uint8_t. In SPI framing that
+// field counts BITS (so ≤ 31 bytes read, ≤ 27 write); in QPI it counts NIBBLES,
+// which is why the same field reaches four times further. Part of QPI's
+// throughput win is this larger chunk, not just the four data lines.
+static constexpr int RD_CHUNK = 127;   // SPI would be 31
+static constexpr int WR_CHUNK = 123;   // SPI would be 27; (4+count)*2 ≤ 255
 
 static void psram_read_n(uint32_t addr, uint8_t *dst, size_t count) {
     while (count > 0) {
@@ -137,6 +140,19 @@ void psram_sync_chr() {}
 
 // ── Init ──
 
+// Bring the part up in QPI at our own clock. The library's psram_qpi_init()
+// hardcodes clkdiv 1.0, which would be 150 MHz SCK at a 300 MHz system clock.
+// Sequence: come up in SPI, send Enter QPI (0x35, 8 BITS in SPI framing), drop
+// the SPI instance, then re-init with the quad program. Quad init deliberately
+// skips the 0x66/0x99 reset, which are SPI-mode commands.
+static psram_spi_inst_t psram_enter_qpi(PIO pio, float clkdiv) {
+    psram_spi_inst_t s = psram_spi_init_clkdiv(pio, -1, clkdiv, false, false);
+    uint8_t enter_qpi[] = { 8, 0, 0x35u };
+    pio_spi_write_read_dma_blocking(&s, enter_qpi, 3, 0, 0);
+    psram_spi_uninit(s);   // quad == false here, so no stray exit command
+    return psram_spi_init_clkdiv(pio, -1, clkdiv, false, true);
+}
+
 bool psram_loader_init() {
     // Reset state that persists through watchdog resets (RP2350 SRAM is not
     // cleared by watchdog).  Without this, a hook registered for a PSRAM game
@@ -148,30 +164,28 @@ bool psram_loader_init() {
         free(chr_full_cache);
         chr_full_cache = nullptr;
     }
-    // Operating point: ~100 MHz state-machine clock (SCK ~50 MHz) with the
-    // PLAIN (non-fudge) PIO program, so clkdiv is SYS_CLK_FREQ / 100 MHz:
-    // 2.5 @ 250 MHz, 3.0 @ 300 MHz.
+    // Operating point: 100 MHz state-machine clock = 50 MHz SCK, in QPI (quad)
+    // mode. clkdiv is SYS_CLK_FREQ / 100 MHz: 2.5 @ 250 MHz, 3.0 @ 300 MHz.
     //
-    // What governs reliability is the PIO program choice, COUPLED to the clock
-    // — not, as this comment used to claim, an oscillating sampling-phase
-    // window failing at both ends. psram_spi.pio documents the fudge variant's
-    // extra read-sync cycle as required ABOVE 83 MHz SPI and wrong below it; a
-    // sweep on the same PCB (~/Source/pico-286) had the plain program passing
-    // monotonically at 49/66/79/99 MHz. Getting the pairing wrong is a DEAD
-    // BUS: past 83 MHz SPI the `false` below must become `true`.
+    // QPI moves ~21.9 MB/s here against a 6.25 MB/s ceiling for single-bit SPI
+    // at the same clock, so the protocol is worth far more than raising SCK.
+    // 75 MHz quad does NOT work on this board — every read variant and dummy
+    // count fails, with sampled nibbles coming back as the bitwise OR of two
+    // consecutive true nibbles, which is analog margin (four lines switching
+    // together, and SIO2/SIO3 on repurposed nunchuck pins), not a cycle count.
+    // So do not raise this divisor without re-running the device tests; see
+    // ROADMAP.md §3.
     //
-    // We sit on the 49 MHz row; that sweep soak-tested 99 MHz + fudge at
-    // ~5.0 MB/s. See ROADMAP.md §1 — those numbers are inherited from another
-    // board and unmeasured here, so do not change the divisor without a full
-    // bulk read/verify; a 16-byte round-trip is too weak to catch marginal
-    // timing.
+    // The vendored library carries a PicoCalc fix in psram_spi.pio: upstream's
+    // quad read loop has one turnaround clock too many at this speed and
+    // returns data shifted left by exactly one nibble.
     //
     // The divisor holds its sampling phase across a change of SYS_CLK_FREQ only
-    // because psram_spi.pio bypasses the PIO input synchronizer on MISO (the
-    // one clk_sys-dependent term); what is left is fixed-ns pad/PCB/t_CO delay.
+    // because psram_spi.pio bypasses the PIO input synchronizer (the one
+    // clk_sys-dependent term); what is left is fixed-ns pad/PCB/t_CO delay.
     // Lose that bypass and the phase moves with the system clock.
     static_assert(SYS_CLK_FREQ % (100 * MHZ) == 0, "pick a clkdiv for this clock");
-    g_spi = psram_spi_init_clkdiv(pio1, -1, (float)SYS_CLK_FREQ / (100 * MHZ), false);
+    g_spi = psram_enter_qpi(pio1, (float)SYS_CLK_FREQ / (100 * MHZ));
     for (int i = 0; i < PRG_SLOTS; i++) { prg_cache_bank[i] = -1; prg_slot_stamp[i] = 0; }
     for (int i = 0; i < shapones::memory::PRGROM_REMAP_TABLE_SIZE; i++) prg_window_slot[i] = -1;
     prg_lru_clock = 0;

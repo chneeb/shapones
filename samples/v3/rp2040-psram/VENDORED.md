@@ -19,6 +19,37 @@ a submodule pin:
 Keeping the directory path unchanged means `samples/v3/CMakeLists.txt` and every
 reference in `CLAUDE.md` and `ROADMAP.md` still resolve.
 
-**Local changes are listed here as they land.** Right now there are none: this
-is byte-for-byte upstream `419375d`, so the switch from submodule to vendored
-copy is functionally a no-op and can be verified by diffing against upstream.
+## Local changes
+
+1. **PR #15, "Initial QSPI(QPI) support"** (`shtirlic`, upstream commit
+   `bdf754f`) applied as-is to `psram_spi.c`, `psram_spi.h`, `psram_spi.pio`.
+   Adds a `quad` parameter to `psram_spi_init_clkdiv()`, a `qspi_psram` PIO
+   program, quad command variants, and `psram_spi_uninit()`.
+
+2. **PicoCalc quad read-phase fix** (`psram_spi.pio`, `psram_spi.h`). The PR's
+   quad read loop carries one turnaround clock too many at 50 MHz SCK, so reads
+   come back shifted left by exactly one nibble. Removing the
+   `jmp readloop_mid` after `set pindirs 0` makes the loop enter at `readloop`
+   instead, one clock earlier. Because that entry samples `y+1` times rather
+   than `y`, every quad read length now passes `y-1`:
+
+   | | was | now |
+   |---|---|---|
+   | `read8_quad_command[1]` | 2 | 1 |
+   | `read16_quad_command[1]` | 4 | 3 |
+   | `read32_quad_command[1]` | 8 | 7 |
+   | `psram_read()` quad | `count * 2` | `count * 2 - 1` |
+
+   Verified on hardware: 4 KB read back with zero errors at 50 MHz, against a
+   pattern written over SPI immediately beforehand. See `ROADMAP.md` section 3
+   for how it was diagnosed and for the variant matrix this came from.
+
+**Known upstream issues left alone**, because nothing here depends on them:
+
+- `psram_spi_uninit()` sends its `0xF5` exit-QPI *after* unclaiming both DMA
+  channels, so the command may not go out at all.
+- That exit command is mis-sized: `{8, 0, 0xF5}` asks for 8 nibbles in QPI
+  framing while supplying 2. Correct would be `{2, 0, 0xF5}`.
+
+Both matter to anyone who tears a QPI instance down and expects the part to
+return to SPI mode. `psram_loader.cpp` initialises once and never exits QPI.
