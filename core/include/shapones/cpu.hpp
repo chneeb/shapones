@@ -6,6 +6,8 @@
 namespace shapones::cpu {
 
 static constexpr int CLOCK_FREQ_NTSC = 1789773;
+static constexpr int CLOCK_FREQ_PAL = 1662607;
+static constexpr int CLOCK_FREQ_DENDY = 1773448;
 
 static constexpr addr_t WRAM_BASE = 0x0;
 static constexpr addr_t WRAM_MIRROR_BASE = 0x800;

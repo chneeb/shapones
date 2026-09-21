@@ -2,6 +2,7 @@
 #define SHAPONES_APU_HPP
 
 #include "shapones/common.hpp"
+#include "shapones/region.hpp"
 
 namespace shapones::apu {
 
@@ -275,6 +276,7 @@ union status_t {
 result_t init();
 void deinit();
 result_t set_sampling_rate(uint32_t rate_hz);
+result_t set_region(region_t region);
 
 result_t reset();
 

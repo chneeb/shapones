@@ -1,4 +1,5 @@
 #include "shapones/apu.hpp"
+#include "shapones/region.hpp"
 #include "shapones/cpu.hpp"
 #include "shapones/fifo.hpp"
 #include "shapones/interrupt.hpp"
@@ -284,17 +285,30 @@ static void flush_write_queue() {
   }
 }
 
+// CPU clock the timer steps are derived from. Region-dependent: a PAL machine
+// clocks the 2A03 slower, so the same APU period is a different number of
+// output samples. Defaults to NTSC and is changed by set_region().
+static uint32_t apu_cpu_clock_hz = cpu::CLOCK_FREQ_NTSC;
+
 result_t set_sampling_rate(uint32_t rate_hz) {
   sampling_rate = rate_hz;
   pulse_timer_step =
-      (1ULL << TIMER_PREC) * cpu::CLOCK_FREQ_NTSC / sampling_rate / 2;
+      (1ULL << TIMER_PREC) * apu_cpu_clock_hz / sampling_rate / 2;
   triangle_timer_step =
-      (1ULL << TIMER_PREC) * cpu::CLOCK_FREQ_NTSC / sampling_rate;
-  noise_timer_step = cpu::CLOCK_FREQ_NTSC / sampling_rate;
+      (1ULL << TIMER_PREC) * apu_cpu_clock_hz / sampling_rate;
+  noise_timer_step = apu_cpu_clock_hz / sampling_rate;
   quarter_frame_phase_step =
       (QUARTER_FRAME_FREQUENCY * QUARTER_FRAME_PHASE_PERIOD) / rate_hz;
-  dmc_step_coeff = ((uint64_t)cpu::CLOCK_FREQ_NTSC << TIMER_PREC) / rate_hz;
+  dmc_step_coeff = ((uint64_t)apu_cpu_clock_hz << TIMER_PREC) / rate_hz;
   return result_t::SUCCESS;
+}
+
+// Output sample rate is unaffected: this port pulls samples on demand from the
+// audio IRQ, so slowing the frame rate cannot starve the DAC and the pitch
+// stays correct by itself. Only the timer steps move.
+result_t set_region(region_t region) {
+  apu_cpu_clock_hz = region_cpu_clock_hz(region);
+  return set_sampling_rate(sampling_rate);
 }
 
 // see: https://www.nesdev.org/wiki/APU_Envelope

@@ -702,7 +702,43 @@ QPI port.
 
 ---
 
-## 4. PAL region detection
+## 4. PAL region detection — DONE (2026-09-21)
+
+**Implemented.** `core/include/shapones/region.hpp` is header-only and takes the
+16-byte header:
+
+- `detect_region()` trusts **only** a NES 2.0 header (byte 7 bits 3-2 == `0b10`,
+  then byte 12 bits 1-0). iNES 1.0 returns `UNKNOWN` and changes nothing.
+- `region_cpu_clock_hz()` — `CLOCK_FREQ_PAL = 1662607`, `CLOCK_FREQ_DENDY =
+  1773448`, added alongside `CLOCK_FREQ_NTSC` in `cpu.hpp`.
+- `region_frame_period_us()` — 16666 for NTSC/MULTI/UNKNOWN, 19997 for
+  PAL/Dendy.
+- `region_letter()` — `N`/`P`/`M`/`D`, `?` for iNES 1.0.
+
+Wiring: `map_ines()` detects the region and calls `apu::set_region()`, which
+recomputes the four timer steps from the region's CPU clock; `ppu_loop()` takes
+its frame period from `memory::current_region`; the boot menu shows a letter per
+row from one 16-byte read per file, using the same detector so the label and the
+pacing cannot disagree.
+
+**The output sample rate is untouched**, as predicted: this port pulls samples
+on demand from the audio IRQ, so slowing the frame rate cannot starve the DAC
+and pitch stays correct by itself. That was the painful part in the reference
+project and was free here.
+
+Verified with a host unit test over eight synthetic headers, including the two
+that matter: an iNES 1.0 header **with** the byte 9 PAL bit set still reports
+`?`, and mapper bits in the high nibble of byte 7 do not break NES 2.0
+detection.
+
+**Known limit, accepted:** this fixes *speed*, not *timing*. The core still runs
+262 scanlines where a PAL machine has 312, so games timing raster effects to the
+longer frame still misbehave. Real PAL support in the core remains a separate,
+much larger item.
+
+<details><summary>Original plan</summary>
+
+## 4a. PAL region detection — as originally scoped
 
 **Today:** `samples/v3/picocalc_nes.cpp:285` hardcodes `FRAME_DELAY_US = 16666`
 and `core/include/shapones/cpu.hpp:8` defines only `CLOCK_FREQ_NTSC`, used at
@@ -738,6 +774,8 @@ detector guarantees the displayed label and the pacing used cannot disagree.
 `?` rather than `N` for unknown is the whole point.
 
 ---
+
+</details>
 
 ## 5. Noise channel level
 
@@ -863,7 +901,7 @@ Two lessons:
 
 ## Suggested order
 
-**PSRAM step 1 (1) — DONE → PAL (4) → open-bus experiment (6) → noise constant
+**PSRAM step 1 (1) — DONE → PAL (4) — DONE → open-bus experiment (6) → noise constant
 (5) → flash-divisor decision (2) → finish QPI on `psram-qpi` (3) → 360 MHz at
 1.30 V (1 step 2) → control-block DMA (7)**
 

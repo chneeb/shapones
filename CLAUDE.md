@@ -60,6 +60,8 @@ Skipping `shapones::init()` leaves semaphores uninitialised and causes hangs.
 
 **Mappers**: only 0–4 (NROM, MMC1, UxROM, CNROM, MMC3) are implemented.
 
+**Region / PAL**: `core/include/shapones/region.hpp` derives the region from the 16-byte iNES header, trusting **only** a NES 2.0 header (iNES 1.0 → `UNKNOWN`, which changes nothing — its PAL bit is clear in practically every dump). `map_ines()` sets `memory::current_region` and calls `apu::set_region()`, which recomputes the APU timer steps from `CLOCK_FREQ_PAL`/`CLOCK_FREQ_DENDY`/`CLOCK_FREQ_NTSC`. Hosts take their frame period from `region_frame_period_us()` (16666 / 19997 µs). The **output sample rate is deliberately untouched**: this port pulls samples on demand from the audio IRQ, so a slower frame rate cannot starve the DAC and pitch stays correct by itself. This fixes speed, not timing — the core still runs 262 scanlines where PAL has 312.
+
 **CPU address bus accuracy** (`core/src/cpu.cpp`): several NES accuracy requirements that are non-obvious on ARM:
 
 - `addr_t = uint_fast16_t` is **uint32_t on ARM Cortex-M** — PC never wraps at $FFFF without explicit masking. All PC increments use `& 0xFFFF`: `fetch()`, `fetch_w()`, `opRTS()`; `bus_read_w()` masks `addr+1` too. `fetch_rel()` masks its result.

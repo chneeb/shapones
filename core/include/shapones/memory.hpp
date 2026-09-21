@@ -2,6 +2,7 @@
 #define SHAPONES_MEMORY_HPP
 
 #include "shapones/common.hpp"
+#include "shapones/region.hpp"
 
 namespace shapones::memory {
 
@@ -105,6 +106,8 @@ extern void (*prgrom_bank_switch_hook)(uint32_t cpu_block, uint32_t phys_block);
 
 result_t init();
 void deinit();
+
+extern region_t current_region;
 
 result_t map_ines(const uint8_t *ines);
 void unmap_ines();

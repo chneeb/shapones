@@ -13,6 +13,7 @@
 #include "pwm_audio.hpp"
 
 #include "shapones/shapones.hpp"
+#include "shapones/region.hpp"
 
 #include "common.hpp"
 #include "boot_menu.hpp"
@@ -282,7 +283,13 @@ static void cpu_loop() {
 
 
 static void ppu_loop() {
-    constexpr int FRAME_DELAY_US = 16666;
+    // Paced from the ROM's region: 16666 us for NTSC, 19997 us (50.007 Hz) for
+    // PAL and Dendy. Without this a PAL ROM runs ~20% fast, music included.
+    // Known limit: the core still runs 262 scanlines, so games timing raster
+    // effects to a PAL machine's 312 still misbehave - this fixes speed, not
+    // timing. See ROADMAP.md section 4.
+    const int FRAME_DELAY_US =
+        (int)shapones::region_frame_period_us(shapones::memory::current_region);
     absolute_time_t next_time = delayed_by_us(get_absolute_time(), FRAME_DELAY_US);
     
     for(;;) {

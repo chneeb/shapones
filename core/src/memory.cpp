@@ -2,8 +2,12 @@
 #include "shapones/host_intf.hpp"
 #include "shapones/mapper.hpp"
 #include "shapones/ppu.hpp"
+#include "shapones/apu.hpp"
+#include "shapones/region.hpp"
 
 namespace shapones::memory {
+
+region_t current_region = region_t::UNKNOWN;
 
 uint8_t wram[WRAM_SIZE];
 uint8_t vram[VRAM_SIZE];
@@ -65,6 +69,12 @@ result_t map_ines(const uint8_t *ines) {
       ines[3] != 0x1a) {
     SHAPONES_RET_ERR(result_t::ERR_INES_INVALID_FORMAT);
   }
+
+  // Region. Only a NES 2.0 header carries this trustworthily; anything else
+  // reports UNKNOWN and nothing changes. See region.hpp.
+  current_region = detect_region(ines);
+  SHAPONES_PRINTF("Region: %c\n", region_letter(current_region));
+  apu::set_region(current_region);
 
   // Size of PRG ROM in 16 KB units
   int num_prg_rom_pages = ines[4];

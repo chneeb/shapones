@@ -1,4 +1,5 @@
 #include "boot_menu.hpp"
+#include "shapones/region.hpp"
 
 #include <string.h>
 #include <malloc.h>
@@ -25,10 +26,10 @@ constexpr const char *ROM_DIR = "nes";
 static const char *rom_dir = "";
 
 // enumerate NES files
-static int enum_files(FATFS *fs, char **fname_list, int *fsize_list);
+static int enum_files(FATFS *fs, char **fname_list, int *fsize_list, char *region_list);
 
 // show ROM select menu
-static int rom_select(int num_files, char **file_list);
+static int rom_select(int num_files, char **file_list, const char *region_list);
 
 // load NES file
 static bool load_nes(const char *fname, int size);
@@ -37,12 +38,13 @@ bool boot_menu() {
     FATFS fs;
     char *fname_list[MAX_FILES];
     int fsize_list[MAX_FILES];
-    int num_files = enum_files(&fs, fname_list, fsize_list);
+    char region_list[MAX_FILES];
+    int num_files = enum_files(&fs, fname_list, fsize_list, region_list);
     if (num_files <= 0) {
         return false;
     }
 
-    int index = rom_select(num_files, fname_list);
+    int index = rom_select(num_files, fname_list, region_list);
 
     if ( ! load_nes(fname_list[index], fsize_list[index])) {
         return false;
@@ -55,7 +57,7 @@ bool boot_menu() {
     return true;
 }
 
-static int enum_files(FATFS *fs, char **fname_list, int *fsize_list) {
+static int enum_files(FATFS *fs, char **fname_list, int *fsize_list, char *region_list) {
     char tmp[16];
     int y = 20;
     constexpr int x_result = 120;
@@ -105,6 +107,26 @@ static int enum_files(FATFS *fs, char **fname_list, int *fsize_list) {
         fname_list[num_files] = (char*)malloc(strlen(finfo.fname) + 1);
         strcpy(fname_list[num_files], finfo.fname);
         fsize_list[num_files] = finfo.fsize;
+
+        // Region letter: one 16-byte read per file. Sharing the detector with
+        // the emulator means the label shown here and the pacing actually used
+        // can never disagree.
+        region_list[num_files] = '?';
+        {
+            char path[300];
+            if (rom_dir[0]) snprintf(path, sizeof(path), "%s/%s", rom_dir, finfo.fname);
+            else            snprintf(path, sizeof(path), "%s", finfo.fname);
+            FIL f;
+            if (f_open(&f, path, FA_READ) == FR_OK) {
+                uint8_t hdr[16];
+                UINT br = 0;
+                if (f_read(&f, hdr, sizeof(hdr), &br) == FR_OK && br == sizeof(hdr))
+                    region_list[num_files] =
+                        shapones::region_letter(shapones::detect_region(hdr));
+                f_close(&f);
+            }
+        }
+
         fres = f_findnext(&dobj, &finfo);
         num_files++;
     }
@@ -120,7 +142,7 @@ static int enum_files(FATFS *fs, char **fname_list, int *fsize_list) {
     return num_files;
 }
 
-static int rom_select(int num_files, char **file_list) {
+static int rom_select(int num_files, char **file_list, const char *region_list) {
     int sel_index = 0;
     int page_index = 0;
     char buf[6];
@@ -130,6 +152,10 @@ static int rom_select(int num_files, char **file_list) {
 
         for (int i = 0; i < items_per_page && (page_index + i) < num_files; i++) {
             draw_string(20, i * 20, file_list[page_index + i]);
+            // '?' means an iNES 1.0 header, i.e. no trustworthy region info -
+            // which is most dumps, and exactly the case worth seeing.
+            char rbuf[2] = { region_list[page_index + i], 0 };
+            draw_string(FRAME_BUFF_WIDTH - 16, i * 20, rbuf);
         }
 
         sprintf(buf,"%02d",sel_index+1);
