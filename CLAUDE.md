@@ -88,7 +88,7 @@ Communication between cores is a lock-free FIFO (`line_fifo_wptr`/`line_fifo_rpt
 
 **Keyboard**: I2C peripheral at address `0x1F` on `i2c1` (SDA=GP6, SCL=GP7), polled from a 1 kHz hardware alarm ISR. Key codes are decoded in `kbd_interrupt()` inside `common.cpp` and written into `input_pins[]`.
 
-**SD card**: FatFS (`samples/fatfs/`) over SPI. Picocalc-specific pin mapping is in `samples/fatfs/source/mmc_pico_spi.c` (TX=GP19, RX=GP16, SCK=GP18, CS=GP17).
+**SD card**: FatFS (`samples/fatfs/`) over SPI. Picocalc-specific pin mapping is in `samples/fatfs/source/mmc_pico_spi.c` (TX=GP19, RX=GP16, SCK=GP18, CS=GP17). Bus clock: 400 kHz for card identification, then **25 MHz** (`SD_FCLK_HZ`, overridable from CMake). Until 2026-09-21 the `FCLK_FAST()`/`FCLK_SLOW()` macros were stubbed to `{ }`, so the card never left the 250 kHz init clock — ~31 kB/s, which made a 384 kB ROM take on the order of ten seconds to load. Note `samples/pico_ws19804` compiles this same driver.
 
 **ROM location** (`boot_menu.cpp`): `enum_files()` scans the `nes/` subfolder for `*.nes` (see `ROM_DIR`), falling back to the SD root if `nes/` doesn't exist (`FR_NO_PATH`). The winning directory is recorded in the `rom_dir` static so `load_nes()` can build the full path. The menu shows bare filenames; it's `nes/` **or** root, not a merged listing.
 

@@ -777,6 +777,28 @@ detector guarantees the displayed label and the pacing used cannot disagree.
 
 </details>
 
+## 4b. SD bus clock — DONE (2026-09-21)
+
+Not a roadmap item until it surfaced: adding the per-file region read to the
+boot menu made the ROM list visibly slow, which exposed that the SD bus had been
+running at **250 kHz** all along.
+
+`mmc_pico_spi.c` follows the standard FatFs pattern — identify the card at a
+slow clock, then `FCLK_FAST()` once it answers — but both macros were defined as
+`{ }`. So the "set fast clock" line at the end of `disk_initialize()` did
+nothing and the card stayed at its 250 kHz init clock forever: ~31 kB/s, which
+is why a 384 kB ROM took on the order of ten seconds to load.
+
+Now 400 kHz for identification (the SD spec's limit for that phase) and
+**25 MHz** after, the ceiling for default-speed SPI mode. 30 MHz has been run on
+PicoCalc hardware in another project, so this is the spec limit rather than a
+stretch. `SD_FCLK_HZ` is overridable from CMake because
+`samples/pico_ws19804` compiles the same driver on hardware neither of us can
+test.
+
+Both rates divide `clk_peri` exactly at 300 MHz. Expect ~100x on SD reads: ROM
+loads under a second, and the region scan imperceptible.
+
 ## 5. Noise channel level
 
 **Today:** `core/src/apu.cpp:468` returns `vol >> 1` — noise at 0.5 of a pulse,

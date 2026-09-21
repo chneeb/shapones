@@ -24,8 +24,28 @@
 #define DEF_SPI_SCK_PIN 18
 #define DEF_SPI_CSN_PIN 17
 
-#define FCLK_FAST() { }
-#define FCLK_SLOW() { }
+/* SD bus clock.
+ *
+ * These were stubbed out to { }, so the card was identified at the init clock
+ * and then "switched to fast" by a no-op - it stayed at 250 kHz for every
+ * transfer, forever. That is ~31 kB/s, which is why loading a 384 kB ROM took
+ * on the order of ten seconds.
+ *
+ * FCLK_SLOW is the identification clock and must stay <= 400 kHz per the SD
+ * spec. FCLK_FAST is the ceiling for default-speed SPI mode; 30 MHz has been
+ * run on PicoCalc hardware, so 25 MHz is the spec limit rather than a stretch.
+ * Override SD_FCLK_HZ from CMake for a board that needs something slower -
+ * samples/pico_ws19804 compiles this same driver.
+ *
+ * At a 300 MHz clk_peri both divide exactly: 400 kHz and 25 MHz (prescale 2,
+ * postdiv 6).
+ */
+#ifndef SD_FCLK_HZ
+#define SD_FCLK_HZ 25000000
+#endif
+
+#define FCLK_FAST() spi_set_baudrate(Pico_SD_SPI_MOD, SD_FCLK_HZ)
+#define FCLK_SLOW() spi_set_baudrate(Pico_SD_SPI_MOD, 400000)
 
 #define CS_HIGH()   { gpio_put(DEF_SPI_CSN_PIN, 1 ); /* HIGH */ }
 #define CS_LOW()    { gpio_put(DEF_SPI_CSN_PIN, 0 ); /* LOW */ }
