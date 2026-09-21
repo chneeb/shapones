@@ -446,19 +446,76 @@ causes remain open: the chip never entered QPI; it did but SIO2/SIO3 (GP4/GP5)
 do not work; or the quad program's sampling phase is wrong at these divisors.
 Writes went through QPI too, so we do not even know the array holds the pattern.
 
-One clue: at 75 MHz exactly **16384 of 262144 bytes were correct — precisely
-1/16**, where chance would give 1/256. 1/16 is what results when two of the four
-data lines return a constant: each nibble matches with probability 1/4, each byte
-with 1/16. That is the signature of half the data bus not returning data, which
-would point at GP4/GP5. Suggestive, not conclusive — at 50 MHz *zero* bytes were
-correct, which that model alone does not explain, so phase is likely involved.
+~~One clue: at 75 MHz exactly **16384 of 262144 bytes were correct — precisely
+1/16**, where chance would give 1/256. 1/16 is what two of the four data lines
+returning a constant produces, which would point at GP4/GP5.~~
 
-**Next step is the diagnostic probe, not more throughput work**
-(`~/Source/rp2040-psram-qspi-test/picocalc-bench/probe.c`): Read ID in both
-modes, since a known-answer read settles engagement without depending on what is
-in memory; plus cross-mode write/read, since entering QPI does not disturb the
-array, so writing in one mode and reading in the other isolates which path is at
-fault.
+**Superseded — this was a red herring.** The next subsection shows the data
+lines are fine and the real cause is a one-nibble read phase error. The 1/16
+figure is what a nibble-shifted read of *this particular pattern* happens to
+score. Left here because the reasoning looked sound and was wrong: an error
+*rate* was being used to infer a mechanism, when the error *shape* — which the
+probe printed and the benchmark did not — named it immediately.
+
+### Diagnosed: QPI works, the read command is one nibble out (2026-09-21)
+
+The probe (`picocalc-bench/probe.c`) settled it.
+
+**QPI works and GP4/GP5 are sound.** Writing the pattern over QPI and reading it
+back over SPI gave **zero errors**, with the window scrubbed to `0xA5` in SPI
+first so stale data cannot explain the pass. For the array to hold the pattern,
+the chip must have accepted a quad-width `0x38` command, address and payload
+across **all four data lines**. SPI Read ID returns `0D 5D 53 31 76 37 43 8E` —
+`0x0D` AP Memory, `0x5D` KGD pass — confirming the part.
+
+So both hypotheses this section carried are dead, **including the 1/16 clue
+above, which was a red herring**: the probe's nibble analysis reports
+always-set `0x0` and always-clear `0x0`, meaning every nibble value appeared on
+both halves. Nothing is stuck.
+
+**The fault is the QPI read path, and it is a phase error, not corruption.**
+Writing over SPI and reading over QPI returns the data *shifted left by exactly
+one nibble*:
+
+```
+expected  5 B 4 4 6 5 0 6 2 7 C 0 E 1 8 2 A 3 4 C ...
+received    B 4 4 6 5 0 6 2 7 C 0 E 1 8 2 A 3 4 C ...
+```
+
+`received[i] == expected[i+1]` across the whole window, with one junk nibble
+pulled in at the tail. The bytes are right; we start sampling one cycle late.
+
+**Cause.** `read_quad_command` is `{14, 0, 0xEB, 0,0,0, 0,0,0}` — 14 nibbles out:
+`0xEB` (2) + 24-bit address (6) + **6 dummy cycles**, which is what the
+APS6404L/ESP-PSRAM64H datasheet specifies for Fast Read Quad. But the
+`qspi_psram` PIO program **hardcodes the extra read-sync cycle**
+(`set pindirs 0 side 0b10 ; Fudge factor of extra clock cycle`) — the same cycle
+the SPI side documents as required above 83 MHz and wrong below it. On the SPI
+side you choose between `spi_psram` and `spi_psram_fudge`; **the quad program has
+no non-fudge variant**. At 50 MHz we therefore get 6 datasheet dummies plus one,
+and land a nibble late.
+
+It explains the whole picture: writes are unaffected because the fudge is in the
+read path only, which is why the cross-mode write passed; the QPI Read ID came
+back all zeros because it is a read too; and 100% wrong at 50 MHz against 93.75%
+at 75 MHz is two different wrong phases, not two different faults.
+
+**Two fixes:**
+
+- **(a) One value, to test the theory:** `read_quad_command[0]` 14 -> **13**,
+  dropping one dummy cycle to cancel the PIO's extra one.
+- **(b) The real fix, and what belongs upstream:** a non-fudge quad program
+  mirroring the SPI side, so the read-sync cycle follows the clock rate instead
+  of being baked in. The existing line also flips `pindirs` to input, so it
+  cannot simply be deleted — the side-set needs restructuring so the direction
+  change emits no clock edge.
+
+**Next:** `picocalc-bench/sweep.c` sweeps `read_quad_command[0]` over 12-16
+against clkdiv 3.0 / 2.0 / 1.5, verifying each combination with the pattern
+always written over SPI. Failing rows report the nibble offset that *would* have
+matched, so even a table of failures names the right value. If 13 passes below
+83 MHz and 14 above it, that confirms the hardcoded read-sync cycle and settles
+where the threshold sits on this board — which is what fix (b) needs.
 
 ### Transfer width is a separate lever, and may be cheaper than QPI
 
