@@ -22,14 +22,6 @@ volatile cycle_t ppu_cycle_count;
 static uint32_t nmi_count = 0;
 static addr_t nmi_vector = 0;
 static uint32_t rti_count = 0;
-#ifndef SHAPONES_PPU_WRITEONLY_OPENBUS
-#define SHAPONES_PPU_WRITEONLY_OPENBUS 1
-#endif
-
-// Runtime-toggleable so the comparison does not need two firmware builds.
-// The build flag only chooses the initial value.
-volatile bool writeonly_open_bus = SHAPONES_PPU_WRITEONLY_OPENBUS;
-
 static uint8_t open_bus = 0;
 
 cycle_t dma_cycle_steal = 0;
@@ -860,11 +852,12 @@ uint8_t bus_read(addr_t addr) {
     if (reg_idx == 2 || reg_idx == 4 || reg_idx == 7) {
       retval = ppu::reg_read(0x2000 + reg_idx);
     } else {
-      // Write-only PPU register. CLAUDE.md has long claimed that returning 0
-      // here breaks Bubble Bobble and that open bus is what fixes it; that is
-      // under test - see ROADMAP.md section 6. Build with
-      // -DSHAPONES_PPU_WRITEONLY_OPENBUS=0 to return 0 instead and compare.
-      retval = writeonly_open_bus ? open_bus : 0;
+      // Write-only PPU register: return the last byte on the CPU data bus,
+      // which is what hardware does. Tested against returning 0 on device and
+      // the two are indistinguishable, including for Bubble Bobble - so this is
+      // here for accuracy, not because any game is known to need it.
+      // See ROADMAP.md section 6.
+      retval = open_bus;  // last byte on the CPU data bus
     }
   } else if (apu::REG_PULSE1_REG0 <= addr && addr <= apu::REG_DMC_REG3 ||
              addr == apu::REG_STATUS) {

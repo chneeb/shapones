@@ -827,7 +827,47 @@ bundle it with the cheap step. Neither project has tried it.
 
 ---
 
-## 6. Open bus / Bubble Bobble — a documentation fix, not a code fix
+## 6. Open bus / Bubble Bobble — ANSWERED, and Bubble Bobble parked (2026-09-21)
+
+**The open-bus question is settled: it makes no difference.** Compared on device
+with a runtime toggle, open bus and returning 0 are indistinguishable — including
+for Bubble Bobble, which fails identically either way. The long-standing
+`CLAUDE.md` claim that returning 0 breaks that game was never true. Open bus is
+kept because it is what hardware does, and the note now says so.
+
+**Bubble Bobble is broken for some other reason, and is parked.** What it does:
+the stack falls from `0xfc` to `0x24` (~216 bytes), then an `RTI` returns to
+`0x334a` — `$2002` through the mirror — and the CPU executes PPU registers as
+opcodes. It is **non-deterministic**: identical firmware, different outcome each
+boot, and once fully playable.
+
+Eliminated on hardware, each at the cost of a flash cycle:
+
+| hypothesis | how it was ruled out |
+|---|---|
+| PAL / region | `roms/ines_region.py --strip` gives the same ROM as iNES 1.0; fails identically. PAL SMB and PAL Zelda (same region *and* mapper) both work. |
+| open bus | runtime A/B, indistinguishable |
+| MMC1 | PAL Zelda is MMC1 and works |
+| `reg_read` data race | real defect, fixed, no change to the symptom |
+| deferred PPU writes | synchronous-write mode changed nothing |
+
+**One real fix came out of it**: `ppu::reg_read()` took `SEMAPHORE_PPU` only to
+flush its write queue, leaving `reg.status.raw &= 0x7F` as an unsynchronised
+read-modify-write against core 1, which writes the same byte under that
+semaphore. A lock only one side takes is not a lock. That is fixed and stays.
+
+**If this is picked up again, do not start with another device test.** `core/` is
+platform-independent, so the next step is a headless host harness — stub
+`host_intf`, load the ROM, run `cpu::service()`/`ppu::service()` single-threaded,
+watch for the stack collapse. That also splits the question for free: reproducing
+on a single-threaded host proves it is *not* concurrency and can then be chased
+with a debugger, at no cost per attempt. Five device cycles went on hypotheses
+that a host harness would have tested in minutes.
+
+`-DSHAPONES_TRACE_STACK=1` dumps the last 48 pushes (PC and SP) when the stack
+collapses; off by default.
+
+## 6a. Original framing
 
 `CLAUDE.md` records that reading write-only PPU registers
 ($2000/$2001/$2003/$2005/$2006) must return the last byte on the CPU data bus,

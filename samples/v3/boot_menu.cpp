@@ -1,7 +1,5 @@
 #include "boot_menu.hpp"
 #include "shapones/region.hpp"
-#include "shapones/cpu.hpp"
-#include "shapones/ppu.hpp"
 
 #include <string.h>
 #include <malloc.h>
@@ -164,11 +162,6 @@ static int rom_select(int num_files, char **file_list, const char *region_list) 
         draw_string(0,FRAME_BUFF_HEIGHT-20,buf);
         // ROADMAP section 6: compare open bus against 0 for write-only PPU
         // registers without reflashing. Flip it here, before a ROM starts.
-        char obuf[32];
-        snprintf(obuf, sizeof(obuf), "[o]obus:%-3s [w]sync:%-3s",
-                 shapones::cpu::writeonly_open_bus ? "ON" : "OFF",
-                 shapones::ppu::sync_reg_writes ? "ON" : "OFF");
-        draw_string(96, FRAME_BUFF_HEIGHT-20, obuf);
         draw_string(0, (sel_index % items_per_page) * 20, "=>");
 
         update_lcd();

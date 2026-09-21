@@ -149,33 +149,10 @@ uint8_t reg_read(addr_t addr) {
   return retval;
 }
 
-// PPU register writes are normally queued and applied whenever core 1 next
-// runs ppu::service(), core 0 next reads a PPU register, or the queue fills.
-// So a write takes effect at a time set by cross-core scheduling rather than at
-// the CPU cycle that issued it. Games that write a register and then poll for
-// its effect can spin until the flush happens - and $2000 bit 7 is
-// vblank_nmi_enable, which feeds NMI edge detection directly.
-//
-// Set this to apply writes immediately instead, to test whether a game's
-// misbehaviour comes from that deferral. It is a diagnostic, not a default:
-// $2007 writes are extremely hot during VRAM updates and taking the semaphore
-// on each one costs frame rate. If deferral does turn out to be the problem,
-// the real fix is narrower - flush only on the registers whose timing matters
-// ($2000/$2005/$2006) and leave $2007 batched. See ROADMAP.md section 6.
-volatile bool sync_reg_writes = false;
-
 void reg_write(addr_t addr, uint8_t data) {
   reg_write_t req;
   req.addr = addr;
   req.data = data;
-
-  if (sync_reg_writes) {
-    SemaphoreBlock block(SEMAPHORE_PPU);
-    flush_write_queue();        // drain anything already pending
-    write_queue.try_push(req);  // guaranteed room now
-    flush_write_queue();        // and apply this one before returning
-    return;
-  }
 
   if (!write_queue.try_push(req)) {
     SemaphoreBlock block(SEMAPHORE_PPU);
