@@ -587,6 +587,33 @@ correctly sized exit sent through the *running* state machine before any
 teardown, and a Read ID check between every combination that reports
 `chip-dirty` rather than letting a contaminated row look like a result.
 
+### Re-run on the corrected harness (2026-09-21)
+
+24 combinations, no `TIMEOUT` and no `chip-dirty` anywhere — the contamination
+is gone. Result:
+
+- **`short/fall` + 3 dummy bytes + 50 MHz: PASS**, this time against a pattern
+  written immediately beforehand with the part verified in SPI mode. Genuine
+  end-to-end, not a lucky read of an earlier config's data. **This is the fix.**
+- **Every other combination fails**, including all twelve at 75 MHz.
+
+**75 MHz is not a program-structure problem and should not be pursued.** Four
+read variants x three dummy counts all fail there. Together with the OR-blending
+signature, that points at analog margin rather than cycle counts: four lines
+switching together produce more ground bounce than single-bit SPI at the same
+clock, and SIO2/SIO3 are repurposed nunchuck pins that were never laid out as a
+matched data bus. The untried knobs are drive strength, slew rate and input
+hysteresis, all currently hardcoded in the library — but there is no reason to
+spend them: **QPI at 50 MHz (~21.9 MB/s) beats SPI at 75 MHz (~5.5 MB/s) by
+about 4x**, so the protocol is worth far more than the clock, and 50 MHz is
+where we already are.
+
+*Harness note for anyone re-running it:* with 24 configs the result packing
+collides with the watchdog resume slot — `scratch[1 + i/10]` reaches
+`scratch[3]` at i >= 20, which is where the in-progress index lives. Only the
+reprinted summary is affected; the live lines are correct. Trust the live
+output.
+
 ### Caveat on every throughput figure above (2026-09-21)
 
 **The benchmark timed the verify loop along with the read.** `main.c` put the
