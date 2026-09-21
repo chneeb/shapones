@@ -1,0 +1,108 @@
+; QPI read-phase variants for the PicoCalc PSRAM.
+;
+; All four share the stock write path and differ only in the read section:
+;
+;   turnaround  - "long" keeps the stock extra clock between the last written
+;                 nibble and the first sample; "short" removes one full clock.
+;   sample edge - "fall" samples as SCK goes low (stock); "rise" as it goes high.
+;
+; The short-turnaround variants enter the read loop at readloop instead of
+; readloop_mid, so they take one more sample for a given y. The harness
+; compensates by passing y-1; that is what y_adj is for.
+
+.program qv_long_fall            ; P0 - stock
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b00
+writeloop:
+    out pins, 4         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    set pindirs 0       side 0b10
+    jmp readloop_mid    side 0b00
+readloop:
+    in pins, 4          side 0b00
+readloop_mid:
+    jmp y--, readloop   side 0b10
+    set pindirs 0xF     side 0b01
+
+.program qv_long_rise            ; P1 - stock turnaround, sample on rising edge
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b00
+writeloop:
+    out pins, 4         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    set pindirs 0       side 0b10
+    jmp readloop_mid    side 0b00
+readloop:
+    in pins, 4          side 0b10
+readloop_mid:
+    jmp y--, readloop   side 0b00
+    set pindirs 0xF     side 0b01
+
+.program qv_short_fall           ; P2 - one clock less turnaround
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b00
+writeloop:
+    out pins, 4         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    set pindirs 0       side 0b10
+readloop:
+    in pins, 4          side 0b00
+readloop_mid:
+    jmp y--, readloop   side 0b10
+    set pindirs 0xF     side 0b01
+
+.program qv_short_rise           ; P3 - one clock less, sample on rising edge
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b00
+writeloop:
+    out pins, 4         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    set pindirs 0       side 0b00
+readloop:
+    in pins, 4          side 0b10
+readloop_mid:
+    jmp y--, readloop   side 0b00
+    set pindirs 0xF     side 0b01
+
+% c-sdk {
+#include "hardware/gpio.h"
+// Same state-machine setup as pio_qspi_psram_cs_init(), but taking the config
+// from whichever variant program was loaded.
+static inline void qv_sm_init(PIO pio, uint sm, uint offs, pio_sm_config c,
+                              float clkdiv, uint pin_cs, uint pin_sio0) {
+    sm_config_set_out_pins(&c, pin_sio0, 4);
+    sm_config_set_in_pins(&c, pin_sio0);
+    sm_config_set_set_pins(&c, pin_sio0, 4);
+    sm_config_set_sideset_pins(&c, pin_cs);
+    sm_config_set_out_shift(&c, false, true, 8);
+    sm_config_set_in_shift(&c, false, true, 8);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_cs, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_sio0, 4, true);
+    for (uint i = 0; i < 4; i++) pio_gpio_init(pio, pin_sio0 + i);
+    pio_gpio_init(pio, pin_cs);
+    pio_gpio_init(pio, pin_cs + 1);
+
+    hw_set_bits(&pio->input_sync_bypass, 0xfu << pin_sio0);
+
+    pio_sm_init(pio, sm, offs, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
