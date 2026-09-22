@@ -33,6 +33,12 @@ class Map001 : public Mapper {
 
   void write(addr_t addr, uint8_t value) override {
     bool remap = false;
+#ifdef SHAPONES_MAP001_TRACE
+    SHAPONES_PRINTF("  mmc1 raw write $%04X = 0x%02X (bit %u), shift_reg=0x%02X"
+                    " from PC=0x%04X\n",
+                    (unsigned)addr, value, (unsigned)(value & 1), shift_reg,
+                    (unsigned)cpu::debug_pc());
+#endif
     if (value & 0x80) {
       shift_reg = 0b10000;
       ctrl_reg |= 0x0C;

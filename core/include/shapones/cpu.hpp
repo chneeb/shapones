@@ -5,6 +5,9 @@
 
 namespace shapones::cpu {
 
+// Read-only view of the program counter, for offline diagnosis.
+uint16_t debug_pc();
+
 static constexpr int CLOCK_FREQ_NTSC = 1789773;
 static constexpr int CLOCK_FREQ_PAL = 1662607;
 static constexpr int CLOCK_FREQ_DENDY = 1773448;

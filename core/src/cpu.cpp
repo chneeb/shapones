@@ -11,6 +11,10 @@
 #include "shapones/ppu.hpp"
 #include "shapones/state.hpp"
 
+#if SHAPONES_TRACE_PC
+extern "C" int pc_trace_active = 0;
+#endif
+
 namespace shapones::cpu {
 
 static constexpr int BATCH_EXECUTES = 4;
@@ -98,6 +102,8 @@ static SHAPONES_INLINE uint16_t fetch_w() {
   return retval;
 }
 
+uint16_t debug_pc() { return (uint16_t)reg.PC; }
+
 static SHAPONES_INLINE uint8_t set_nz(uint8_t value) {
   reg.status.negative = (value >> 7) & 1;
   reg.status.zero = (value == 0) ? 1 : 0;
@@ -140,6 +146,10 @@ static SHAPONES_INLINE void push(uint8_t value) {
   push_trace[push_trace_pos].pc = (uint16_t)reg.PC;
   push_trace[push_trace_pos].sp = reg.SP;
   push_trace_pos = (push_trace_pos + 1) % PUSH_TRACE_LEN;
+#endif
+#if SHAPONES_TRACE_STACK
+  // Threshold, not equality: a runaway can step past any single value.
+  if (reg.SP <= 0x40) dump_push_trace("SP fell below 0x40");
 #endif
   if (reg.SP == 0) {
     SHAPONES_ERRORF("Stack Overflow at push()\n");
@@ -320,7 +330,14 @@ static SHAPONES_INLINE void opSED() { reg.status.decimalmode = 1; }
 
 static SHAPONES_INLINE void opTXA() { reg.A = set_nz(reg.X); }
 static SHAPONES_INLINE void opTYA() { reg.A = set_nz(reg.Y); }
-static SHAPONES_INLINE void opTXS() { reg.SP = reg.X; }
+static SHAPONES_INLINE void opTXS() {
+#if SHAPONES_TRACE_STACK
+  if (true)
+    SHAPONES_PRINTF("TXS at PC=0x%04x sets SP=0x%02x (was 0x%02x)\n",
+                    (unsigned)reg.PC, (unsigned)reg.X, (unsigned)reg.SP);
+#endif
+  reg.SP = reg.X;
+}
 static SHAPONES_INLINE void opTAY() { reg.Y = set_nz(reg.A); }
 static SHAPONES_INLINE void opTAX() { reg.X = set_nz(reg.A); }
 static SHAPONES_INLINE void opTSX() { reg.X = set_nz(reg.SP); }
@@ -510,6 +527,9 @@ result_t service() {
       push(s.raw);
       reg.status.interrupt = true;
       addr_t vec = bus_read_w(VEC_NMI);
+#if SHAPONES_TRACE_PC
+      if (nmi_count < 2) pc_trace_active = 1 + nmi_count;
+#endif
       if (nmi_count == 0) nmi_vector = vec;
       if (nmi_count < 3) {
         SHAPONES_PRINTF(
@@ -539,6 +559,13 @@ result_t service() {
       int n = BATCH_EXECUTES;
 
       while (n-- > 0 && !ppu_scroll_changed) {
+#if SHAPONES_TRACE_PC
+        // Offline only: dump the instruction stream inside the first few NMI
+        // handlers, so two passes can be diffed to find where they part.
+        if (pc_trace_active) SHAPONES_PRINTF("PC %04x A=%02x X=%02x Y=%02x P=%02x\n",
+                                             (unsigned)reg.PC, reg.A, reg.X, reg.Y,
+                                             reg.status.raw);
+#endif
         uint8_t op_code = fetch();
 
         switch (op_code) {
@@ -890,7 +917,16 @@ static void bus_write(addr_t addr, uint8_t data) {
     apu::reg_write(addr, data);
   } else if (addr == INPUT_REG_0) {
     input::write_control(data);
-  } else {
+  } else if (addr >= 0x8000) {
+    // Mapper registers live at $8000-$FFFF. This used to be a bare `else`,
+    // so every address not matched above - $4017, $4020-$7FFF, anything - was
+    // handed to the mapper as well. On MMC1 that is destructive rather than
+    // merely wrong: its registers are written as a five-bit serial stream into
+    // a shift register shared by all four of them, so a stray write shifts a
+    // junk bit in and the game's next real sequence latches early, with the
+    // bits off by one. Bubble Bobble asked for PRG bank 6 and got 13, so a
+    // JSR $8000 landed in unused filler and the CPU ran away into PPU
+    // register space. See ROADMAP.md section 6.
     mapper::instance->write(addr, data);
   }
 }
