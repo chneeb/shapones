@@ -6,10 +6,12 @@
 // show boot menu
 bool boot_menu();
 
-// ROM list layout. The font is mono8x16, so ROW_H = 16 is the tightest that
-// does not clip glyphs; one row is reserved at the bottom for the counter.
-// This used to be a hardcoded 11, which left three rows of screen unused even
-// at the old 20 px spacing.
-constexpr int ROW_H = 16;
+// ROM list layout. The font is mono8x16; ROW_H is the line pitch, so 20 keeps
+// the original 4 px gap between rows. items_per_page used to be hardcoded to
+// 11 with this very formula commented out beside it, which left three rows of
+// screen unused. One row is reserved at the bottom for the counter.
+// (ROW_H = 16 would pack 17 per page with no gap, at the cost of looking
+// cramped.)
+constexpr int ROW_H = 20;
 constexpr int items_per_page = (FRAME_BUFF_HEIGHT / ROW_H) - 1;
 #endif
