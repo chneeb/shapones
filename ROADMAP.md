@@ -966,29 +966,32 @@ Two lessons:
 
 ## Suggested order
 
-**PSRAM step 1 (1) — DONE → PAL (4) — DONE → open-bus experiment (6) → noise constant
-(5) → flash-divisor decision (2) → finish QPI on `psram-qpi` (3) → 360 MHz at
-1.30 V (1 step 2) → control-block DMA (7)**
+**Done so far:** PSRAM step 1 (§1), PAL region detection (§4), SD bus clock
+(§4b), the open-bus question (§6, answered), and the `reg_read` data race.
 
-**PSRAM step 1 is applied** (2026-09-21): clkdiv 2.0, 75 MHz SCK, measured
-+35% on this board with zero errors. It was the one item that was finished and
-unshipped.
+**What is left, smallest first:**
 
-Then the three small independent items, in that order because none of them
-touches the PSRAM path — which has cost several device flashes — and all three
-are core or sample-local. PAL is the largest user-visible fix left. The open-bus
-experiment is ten minutes and settles a `CLAUDE.md` note that probably names the
-wrong cause. The noise constant is a build-time A/B.
+1. **Noise channel level (§5)** — a build-time weight and a listening test. No
+   PSRAM, no hardware risk, no dependencies. The obvious next thing.
+2. **Flash-divisor decision (§2)** — deferred, not resolved. Flash runs at
+   150 MHz today against a ~133 MHz rating, confirmed statically from our own
+   build output. Setting `PICO_FLASH_SPI_CLKDIV=4` gives 75 MHz; the cost is XIP
+   fill bandwidth, so it wants measuring against fps rather than assuming. It
+   also **gates item 4**.
+3. **Finish QPI (§3)** on the `psram-qpi` branch — the largest single win left
+   (~3.4x on PSRAM reads), working standalone but not in the loader. Next step
+   is reproducing `psram_enter_qpi()` in `samples/v3/tools/psram-test` on
+   `pio1`, not another loader patch.
+4. **360 MHz at 1.30 V (§1 step 2)** — ~90% of the PSRAM clock gain plus 20%
+   more CPU, at our existing voltage. Blocked on the flash divisor, and needs
+   `clk_peri` and the LCD clock pinned first.
+5. **Control-block DMA (§7)** — multi-day, and only worth it if interlace
+   combing becomes unacceptable or non-interlaced 60 fps is wanted.
 
-The flash-divisor decision sits after them because it was deferred rather than
-resolved: the 150 MHz figure is confirmed statically, so what remains is a
-judgement about margin versus XIP fill bandwidth, and it gates 360 MHz.
+**Loose end:** the `reg_read` semaphore's cost was never measured, because the
+SMB3 dump on hand is PAL and sits pinned at its 50 Hz cap with headroom.
+`roms/ines_region.py --strip` gives the same ROM at 60 Hz for a comparable
+number against the old ~55-60 figure.
 
-**QPI is not in this sequence as a device test any more.** It lives on the
-`psram-qpi` branch, works standalone and not in the loader, and the next step
-there is to reproduce `psram_enter_qpi()` in the standalone harness on `pio1` —
-not another patch to a loader that has to stay bootable. Section 3 has the
-detail.
-
-Only QPI's completion and the control-block DMA are real projects; everything
-before them is a day or less.
+**Bubble Bobble (§6) is parked**, not scheduled. If it is picked up, start with
+a headless host harness, not the device.
