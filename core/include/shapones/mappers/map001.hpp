@@ -52,6 +52,12 @@ class Map001 : public Mapper {
           case 0x6000: prg_bank = val; break;
         }
         remap = true;
+#ifdef SHAPONES_MAP001_TRACE
+        SHAPONES_PRINTF("MMC1 write addr=$%04X -> ctrl=0x%02X chr0=0x%02X "
+                        "chr1=0x%02X prg=0x%02X (chr mode %s)\n",
+                        (unsigned)addr, ctrl_reg, chr_bank0, chr_bank1, prg_bank,
+                        (ctrl_reg & 0x10) ? "4KB" : "8KB");
+#endif
       }
     }
 

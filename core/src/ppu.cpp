@@ -99,6 +99,12 @@ result_t reset() {
 
 int current_focus_y() { return focus_y; }
 
+// Read-only views of state that is otherwise file-static, for offline
+// diagnosis (samples/hosttest). Nothing in the emulator uses these.
+uint8_t debug_ppuctrl() { return reg.control.raw; }
+uint8_t debug_ppumask() { return reg.mask.raw; }
+uint8_t debug_palette(int i) { return palette_file[i & (PALETTE_FILE_SIZE - 1)]; }
+
 uint8_t reg_read(addr_t addr) {
   // Runs on core 0. ppu::service() on core 1 holds SEMAPHORE_PPU while it
   // renders and while it does NMI edge detection on reg.status, and every case

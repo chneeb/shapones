@@ -181,6 +181,12 @@ void deinit();
 result_t reset();
 int current_focus_y();
 
+// Read-only views of internal state, for offline diagnosis. See
+// samples/hosttest.
+uint8_t debug_ppuctrl();
+uint8_t debug_ppumask();
+uint8_t debug_palette(int i);
+
 uint8_t reg_read(addr_t addr);
 void reg_write(addr_t addr, uint8_t data);
 
