@@ -145,24 +145,22 @@ static int enum_files(FATFS *fs, char **fname_list, int *fsize_list, char *regio
 static int rom_select(int num_files, char **file_list, const char *region_list) {
     int sel_index = 0;
     int page_index = 0;
-    char buf[6];
+    char buf[24];
     for(;;) {
         clear_frame_buff();
         page_index = (sel_index / items_per_page) * items_per_page;
 
         for (int i = 0; i < items_per_page && (page_index + i) < num_files; i++) {
-            draw_string(20, i * 20, file_list[page_index + i]);
+            draw_string(20, i * ROW_H, file_list[page_index + i]);
             // '?' means an iNES 1.0 header, i.e. no trustworthy region info -
             // which is most dumps, and exactly the case worth seeing.
             char rbuf[2] = { region_list[page_index + i], 0 };
-            draw_string(FRAME_BUFF_WIDTH - 16, i * 20, rbuf);
+            draw_string(FRAME_BUFF_WIDTH - 16, i * ROW_H, rbuf);
         }
 
-        sprintf(buf,"%02d",sel_index+1);
-        draw_string(0,FRAME_BUFF_HEIGHT-20,buf);
-        // ROADMAP section 6: compare open bus against 0 for write-only PPU
-        // registers without reflashing. Flip it here, before a ROM starts.
-        draw_string(0, (sel_index % items_per_page) * 20, "=>");
+        snprintf(buf, sizeof(buf), "%d/%d", sel_index + 1, num_files);
+        draw_string(0, FRAME_BUFF_HEIGHT - ROW_H, buf);
+        draw_string(0, (sel_index % items_per_page) * ROW_H, "=>");
 
         update_lcd();
 
