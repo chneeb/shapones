@@ -827,7 +827,66 @@ bundle it with the cheap step. Neither project has tried it.
 
 ---
 
-## 6. Open bus / Bubble Bobble — ANSWERED, and Bubble Bobble parked (2026-09-21)
+## 6. Bubble Bobble and Tetris — BOTH FIXED (2026-09-22)
+
+Two real bugs, found in one sitting with `samples/hosttest` and **zero device
+flashes**. Five flashes had previously been spent on this without finding
+either.
+
+### Tetris: one-screen mirroring used a two-screen mask
+
+`SINGLE_LOWER`/`SINGLE_UPPER` used the `HORIZONTAL` address mask
+(`(VRAM_SIZE-1)-(VRAM_SIZE/2)` = `0x7FF`), which leaves bit 10 live and so still
+addresses two nametables. One-screen mirroring has to collapse all four
+nametable selects onto one 1 kB screen: the mask is `0x3FF`.
+
+Tetris set one-screen-lower, wrote its playfield to nametable 0, and rendered
+with nametable select 3, so the fetch landed in a nametable it had never
+written. Every background tile read `0xFF` and drew as colour 0 — a black
+playfield with only the sprites (falling piece, preview) visible.
+
+### Bubble Bobble: every unrecognised write went to the mapper
+
+`bus_write` ended in a bare `else`, so any address not matched earlier —
+`$4017`, `$4020-$7FFF`, anything — was handed to the mapper. On MMC1 that is
+destructive rather than merely wrong: its four registers share one shift
+register written as a five-bit serial stream, so a stray write shifts a junk
+bit in and the game's next real sequence latches early with its bits off by one.
+
+Bubble Bobble writes `$4022/$4023/$4025/$4026/$4017/$4080/$408A` during init, so
+PRG bank 6 latched as 13, masked to bank 5, which is filler in this ROM. Its
+`JSR $8000` called unused space, the CPU ran away into PPU register space, and
+the stack collapsed — the entire "`RTI` to `$334a`" signature, and the torn logo
+too, since the wrong bank was mapped from the first frame.
+
+Mappers 0-4 respond only to `$8000-$FFFF`, so that is the guard.
+
+### The open-bus question, settled separately
+
+Open bus and returning 0 are **indistinguishable** — compared on device with a
+runtime toggle, and Bubble Bobble failed identically either way because its real
+fault was the bus decode. The long-standing `CLAUDE.md` claim that returning 0
+breaks that game was never true. Open bus is kept because it is what hardware
+does.
+
+### Why the harness mattered
+
+Each step ruled something out, none needing hardware: it reproduced the device
+symptom **single-threaded** (so not a race); the stack trace showed `SP` jumping
+with no intervening push (so a `TXS`, not a runaway); logging `TXS` showed the
+handler's stack restore never running on the second NMI; the PC trace showed
+execution entering `$3xxx` from a `JSR $8000`; the ROM showed filler at the
+mapped bank and real code one bank over; and the MMC1 write trace showed junk
+addresses shifting the register.
+
+Regression-checked against Castlevania, Dr. Mario, DuckTales, Mega Man, Metroid,
+Pac-Man, SMB, SMB3, Tetris and Zelda.
+
+**Left open:** `$4017` (APU frame counter) is now ignored rather than
+misdelivered to the mapper. It never reached the APU before either, so this is
+not a regression, but it is a gap.
+
+## 6b. Earlier framing, kept because the reasoning was wrong in an instructive way
 
 **The open-bus question is settled: it makes no difference.** Compared on device
 with a runtime toggle, open bus and returning 0 are indistinguishable — including
@@ -966,27 +1025,25 @@ Two lessons:
 
 ## Suggested order
 
-**Done so far:** PSRAM step 1 (§1), PAL region detection (§4), SD bus clock
-(§4b), the open-bus question (§6, answered), and the `reg_read` data race.
+**Done:** PSRAM step 1 (§1), PAL region detection (§4), SD bus clock (§4b),
+one-screen mirroring and the mapper write decode (§6), the `reg_read` data race,
+and the offline harness (`samples/hosttest`).
 
 **What is left, smallest first:**
 
 1. **Noise channel level (§5)** — a build-time weight and a listening test. No
-   PSRAM, no hardware risk, no dependencies. The obvious next thing.
+   dependencies.
 2. **Flash-divisor decision (§2)** — deferred, not resolved. Flash runs at
-   150 MHz today against a ~133 MHz rating, confirmed statically from our own
-   build output. Setting `PICO_FLASH_SPI_CLKDIV=4` gives 75 MHz; the cost is XIP
-   fill bandwidth, so it wants measuring against fps rather than assuming. It
-   also **gates item 4**.
-3. **Finish QPI (§3)** on the `psram-qpi` branch — the largest single win left
-   (~3.4x on PSRAM reads), working standalone but not in the loader. Next step
-   is reproducing `psram_enter_qpi()` in `samples/v3/tools/psram-test` on
-   `pio1`, not another loader patch.
-4. **360 MHz at 1.30 V (§1 step 2)** — ~90% of the PSRAM clock gain plus 20%
-   more CPU, at our existing voltage. Blocked on the flash divisor, and needs
-   `clk_peri` and the LCD clock pinned first.
-5. **Control-block DMA (§7)** — multi-day, and only worth it if interlace
-   combing becomes unacceptable or non-interlaced 60 fps is wanted.
+   150 MHz against a ~133 MHz rating. Gates item 4.
+3. **Finish QPI (§3)** on the `psram-qpi` branch — the largest single win left.
+4. **360 MHz at 1.30 V (§1 step 2)** — blocked on the flash divisor.
+5. **Control-block DMA (§7)** — multi-day, only if interlace combing becomes
+   unacceptable.
+
+**Use `samples/hosttest` first for anything that is not PSRAM or LCD timing.**
+It found two bugs in a sitting that five device flashes had missed. Reproducing
+there also splits concurrency from emulation for free, since it is
+single-threaded.
 
 **Loose end:** the `reg_read` semaphore's cost was never measured, because the
 SMB3 dump on hand is PAL and sits pinned at its 50 Hz cap with headroom.

@@ -60,6 +60,8 @@ Skipping `shapones::init()` leaves semaphores uninitialised and causes hangs.
 
 **Mappers**: only 0–4 (NROM, MMC1, UxROM, CNROM, MMC3) are implemented.
 
+**Nametable mirroring** (`memory.cpp:set_nametable_arrangement`): `VRAM_SIZE` is 4 kB, and the mode is expressed as an AND/OR pair applied in `vram_read`/`vram_write`. `HORIZONTAL` drops bit 11 (`0x7FF`), `VERTICAL` drops bit 10 (`0xBFF`), and the two **one-screen** modes must collapse *all four* nametable selects onto a single 1 kB screen (`0x3FF`, with `SINGLE_UPPER` adding `VRAM_SIZE/2`). The one-screen modes used to share the `HORIZONTAL` mask, which still addresses two screens — a game that set one-screen mirroring and then rendered with nametable select 2 or 3 read an area it had never written and drew a blank background. That is what made Tetris's playfield invisible.
+
 **Region / PAL**: `core/include/shapones/region.hpp` derives the region from the 16-byte iNES header, trusting **only** a NES 2.0 header (iNES 1.0 → `UNKNOWN`, which changes nothing — its PAL bit is clear in practically every dump). `map_ines()` sets `memory::current_region` and calls `apu::set_region()`, which recomputes the APU timer steps from `CLOCK_FREQ_PAL`/`CLOCK_FREQ_DENDY`/`CLOCK_FREQ_NTSC`. Hosts take their frame period from `region_frame_period_us()` (16666 / 19997 µs). The **output sample rate is deliberately untouched**: this port pulls samples on demand from the audio IRQ, so a slower frame rate cannot starve the DAC and pitch stays correct by itself. This fixes speed, not timing — the core still runs 262 scanlines where PAL has 312.
 
 **CPU address bus accuracy** (`core/src/cpu.cpp`): several NES accuracy requirements that are non-obvious on ARM:
@@ -69,6 +71,7 @@ Skipping `shapones::init()` leaves semaphores uninitialised and causes hangs.
 - **PPU register mirrors**: $2000–$2007 are the real registers; $2008–$3FFF mirror them every 8 bytes. The bus decoder covers the full range with `addr < 0x4000` and `0x2000 + (addr & 7)`.
 - **Open-bus for write-only PPU registers**: reading $2000, $2001, $2003, $2005, $2006 (write-only) returns the last byte that was on the CPU data bus (`static uint8_t open_bus`, updated at the end of every `bus_read`). This is what hardware does, so keep it. **This note used to claim that returning 0 breaks Bubble Bobble. That was never true** — tested on device 2026-09-21, open bus and 0 are indistinguishable, including for Bubble Bobble, which is broken here either way for an unrelated reason. InfoNES also runs the game with no open-bus implementation at all. Open bus is kept for accuracy, not because any game is known to need it. See `ROADMAP.md` §6.
 - **$2002 vblank flag** must clear immediately when read, not deferred. Done inline in `ppu::reg_read()` with `reg.status.raw &= 0x7F`.
+- **Mapper writes are $8000-$FFFF only**: `bus_write` must not hand the mapper every address it does not recognise. It used to end in a bare `else`, so `$4017`, `$4020-$7FFF` and anything else unmatched went to the mapper too. On MMC1 that is destructive — its four registers share one shift register written as a five-bit serial stream, so a stray write shifts a junk bit in and the game's next real sequence latches early with its bits off by one. Bubble Bobble's PRG bank 6 latched as 13 and the CPU ran away into PPU register space. Mappers 0-4 all respond only to `$8000-$FFFF`.
 - **Stack pointer wraps**: `pop()` with SP=0xFF wraps to 0x00 (reads $0100) — this is valid 6502 behaviour. Only log a warning, do not stop.
 
 ### Picocalc sample (`samples/v3/`)
@@ -131,4 +134,5 @@ The build must define `PSRAM_ASYNC` in CMakeLists even though the loader only us
 | `samples/xiao/rp/` | Seeed XIAO RP2350 — the most complete reference implementation; uses `pico_extras` |
 | `samples/pico_ws19804/` | Pico + WS19804 LCD breakout (original Pico/RP2040) |
 | `samples/wxapp/` | Desktop wxWidgets app for development/testing |
+| `samples/hosttest/` | **Headless PC harness** — runs a ROM with no hardware, dumps PPU state and writes the frame as a PPM. Single-threaded, so anything reproducing there is an emulation bug rather than a core-0/core-1 race. Use it before reaching for the device: it found the two bugs above in one sitting after five device flashes had not. See its README. |
 | `samples/picopad/` | PicoPad handheld (uses PicoLibSDK, not Pico SDK) |
