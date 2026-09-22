@@ -9,6 +9,11 @@
 #include "shapones/menu.hpp"
 #include "shapones/state.hpp"
 
+#ifdef SHAPONES_PPU_TRACE
+// Offline diagnostics only: scanline to trace, set by samples/hosttest.
+extern "C" int ppu_trace_line = -1;
+#endif
+
 namespace shapones::ppu {
 
 static constexpr uint32_t STATE_HEADER_SIZE = registers_t::STATE_SIZE + 32;
@@ -465,6 +470,16 @@ static void render_bg(uint8_t *line_buff, bool skip_render) {
       uint8_t attr = memory::vram_read(attr_index);
       attr = (attr >> attr_shift_size) & 0x3;
       palette = palette_file + attr * PALETTE_SIZE;
+#ifdef SHAPONES_PPU_TRACE
+      // Offline only: what the background fetch actually saw for one scanline.
+      if (focus_y == ppu_trace_line && i_block < 6) {
+        SHAPONES_PRINTF("  y=%3d blk%d scr=$%04X nameaddr=$%03X name0=%02X "
+                        "fine_y=%u chr0=%04X attr=%u pal=[%02X %02X %02X %02X]\n",
+                        focus_y, i_block, (unsigned)scr, (unsigned)name_addr0,
+                        (unsigned)name0, (unsigned)fine_y, (unsigned)chr0, attr,
+                        palette[0], palette[1], palette[2], palette[3]);
+      }
+#endif
     }
 
     // render BG block

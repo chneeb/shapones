@@ -25,6 +25,9 @@
 #include "shapones/input.hpp"
 
 namespace shapones { void hosttest_set_ines(const uint8_t *p, size_t n); }
+#ifdef SHAPONES_PPU_TRACE
+extern "C" int ppu_trace_line;
+#endif
 
 using namespace shapones;
 
@@ -47,6 +50,9 @@ int main(int argc, char **argv) {
   const char *ppm_path = (argc > 3) ? argv[3] : nullptr;
   bool press_start = (argc > 4 && strcmp(argv[4], "start") == 0);
 
+#ifdef SHAPONES_PPU_TRACE
+  ppu_trace_line = 120;   // mid-playfield
+#endif
   std::vector<uint8_t> rom = read_file(rom_path);
   printf("=== %s (%zu bytes) ===\n", rom_path, rom.size());
   printf("header region: %c\n", region_letter(detect_region(rom.data())));

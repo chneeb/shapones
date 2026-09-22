@@ -215,12 +215,18 @@ void set_nametable_arrangement(nametable_arrangement_t mode) {
       vram_addr_and = (VRAM_SIZE - 1) - (VRAM_SIZE / 4);
       vram_addr_or = 0;
       break;
+    // One-screen: every nametable select must land on the SAME 1 kB screen, so
+    // the mask keeps only the within-screen bits. These previously used the
+    // HORIZONTAL mask, which leaves bit 10 live and so still addresses two
+    // screens - a game that set one-screen mirroring and then rendered with
+    // nametable select 2 or 3 read an area it had never written, and drew a
+    // blank background. That is what made Tetris's playfield invisible.
     case nametable_arrangement_t::SINGLE_LOWER:
-      vram_addr_and = (VRAM_SIZE - 1) - (VRAM_SIZE / 2);
+      vram_addr_and = (VRAM_SIZE / 4) - 1;
       vram_addr_or = 0;
       break;
     case nametable_arrangement_t::SINGLE_UPPER:
-      vram_addr_and = (VRAM_SIZE - 1) - (VRAM_SIZE / 2);
+      vram_addr_and = (VRAM_SIZE / 4) - 1;
       vram_addr_or = VRAM_SIZE / 2;
       break;
     default:
