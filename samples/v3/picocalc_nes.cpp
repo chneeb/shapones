@@ -147,6 +147,28 @@ int main() {
 }
 
 static void boot_nes() {
+    // Interlacing halves what the LCD transfers per frame, which is what buys
+    // 60 fps on NTSC: a full frame is 320*300*2 = 192000 bytes = 20.5 ms at the
+    // 75 MHz LCD SPI, against a 16.7 ms NTSC budget. It cannot fit, so NTSC
+    // keeps interlacing and its faint combing on fast vertical motion.
+    //
+    // A PAL frame has 20.0 ms, so a full frame very nearly fits - 2.4% over,
+    // costing roughly 1 fps. That is a good trade for losing the combing
+    // entirely, so PAL and Dendy default to progressive.
+    //
+    // Still toggleable at runtime with the 'i' key, in either direction.
+    switch (shapones::memory::current_region) {
+        case shapones::region_t::PAL:
+        case shapones::region_t::DENDY:
+            interlace_enabled = false;
+            break;
+        default:
+            interlace_enabled = true;
+            break;
+    }
+    printf("interlace: %s (region %c)\n", interlace_enabled ? "on" : "off",
+           shapones::region_letter(shapones::memory::current_region));
+
     // reset
     shapones::reset();
 
