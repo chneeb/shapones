@@ -1001,6 +1001,42 @@ unacceptable.
 
 ---
 
+## 8. Star Wars (NTSC) freezes early — PARKED (2026-09-23)
+
+Freezes before the game can be started, **at a different point each run**. Other
+NTSC games are fine.
+
+**Does not reproduce in `samples/hosttest`** — 600 frames, NMIs returning
+cleanly, no freeze. That is the opposite result from Tetris and Bubble Bobble,
+and it is the useful part: the harness is single-threaded and maps the whole ROM
+directly, so a fault that only appears on the device is either concurrency or
+one of the subsystems the harness does not have.
+
+Eliminated, both for free:
+
+- **Not the MMC3 scanline IRQ.** Star Wars makes **zero** IRQ latch writes in
+  400 frames; SMB3, which works, makes three. So the `volatile` IRQ state shared
+  between cores is not involved. (`-DSHAPONES_MAP004_TRACE` logs these.)
+- **Not a core emulation bug** reachable without hardware, by the above.
+
+**Leading candidate: the PSRAM PRG bank cache.** At 256 KB against ~172 KB of
+heap it takes the PSRAM path, so PRG runs through the 12-slot victim cache — the
+one subsystem the harness cannot exercise. That fits every symptom: device-only,
+non-deterministic (cache contents depend on access order), MMC3 with its 8 KB
+windows and frequent single-window switches, and other NTSC games being small
+enough for the SRAM path. Section "PRG cache" in `CLAUDE.md` records an earlier
+eviction bug with exactly this signature — wrong bank mapped, runaway JSR, stack
+overflow — and notes it "only bites large MMC3 games doing single-window bank
+switches".
+
+**What does not fit:** SMB3 is also MMC3-on-PSRAM with a *larger* PRG (256 KB
+against 128 KB) and works. So this is a strong lead, not a diagnosis.
+
+**Next step, one flash:** build with `-DSHAPONES_TRACE_STACK=1` and run it. A
+runaway stack with repeating PCs means wrong-bank execution and points at the
+cache; no stack output at all means it is hanging somewhere else — a lock or a
+wait loop — which is a different bug. That splits the field in one go.
+
 ## Dead end — do not repeat
 
 The InfoNES port spent four rounds trying to *schedule around* a bandwidth
@@ -1050,5 +1086,6 @@ SMB3 dump on hand is PAL and sits pinned at its 50 Hz cap with headroom.
 `roms/ines_region.py --strip` gives the same ROM at 60 Hz for a comparable
 number against the old ~55-60 figure.
 
-**Bubble Bobble (§6) is parked**, not scheduled. If it is picked up, start with
-a headless host harness, not the device.
+**Star Wars (§8) is parked**, not scheduled. It is the one open bug that the
+harness cannot reach, so it needs the device — but only once, with the stack
+trace enabled.

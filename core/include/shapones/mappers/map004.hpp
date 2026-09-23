@@ -54,6 +54,9 @@ class Map004 : public Mapper {
       }
     } else if (0xC000 <= addr && addr <= 0xDFFF) {
       if ((addr & 0x0001) == 0) {
+#ifdef SHAPONES_MAP004_TRACE
+        { static int n=0; if (++n < 4) SHAPONES_PRINTF("MMC3 IRQ latch=%u\n", value); }
+#endif
         // IRQ latch
         irq_latch = value;
       } else {
